@@ -1,12 +1,15 @@
 from __future__ import annotations
+import logging
 from aiogram import Router
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
+
 from .services import ensure_user, get_subscription_status, has_active_access
 from .payments.wayforpay import create_invoice
 from .config import settings
 
 router = Router()
+log = logging.getLogger("bot")
 
 @router.message(CommandStart())
 async def cmd_start(m: Message):
@@ -37,14 +40,47 @@ async def cmd_status(m: Message):
 
 @router.message(Command("buy"))
 async def cmd_buy(m: Message):
-    url = await create_invoice(m.from_user.id, amount=settings.PRICE, currency=settings.CURRENCY, product_name=settings.PRODUCT_NAME)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=("Оплатити" if settings.LANG=='ua' else "Оплатить"), url=url)]])
-    await m.answer(("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».") if settings.LANG=='ua' else ("Счёт на 1 месяц сформирован. Нажмите «Оплатить»."), reply_markup=kb)
+    # Формируем счёт и даём кнопку. Если WFP вернёт ошибку — сообщим пользователю.
+    try:
+        url = await create_invoice(
+            m.from_user.id,
+            amount=settings.PRICE,
+            currency=settings.CURRENCY,
+            product_name=settings.PRODUCT_NAME
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=("Оплатити" if settings.LANG=='ua' else "Оплатить"), url=url)]
+        ])
+        await m.answer(
+            "Рахунок на 1 місяць сформовано. Натисніть «Оплатити»."
+            if settings.LANG=='ua' else
+            "Счёт на 1 месяц сформирован. Нажмите «Оплатить».",
+            reply_markup=kb
+        )
+    except Exception as e:
+        log.exception("Не удалось создать счёт WayForPay: %s", e)
+        await m.answer(
+            "Не вдалося сформувати рахунок.\n"
+            "Перевірте налаштування у WayForPay: merchantAccount, merchantDomainName, ключ (WFP_SECRET) "
+            "і Service URL. Спробуйте ще раз."
+            if settings.LANG=='ua' else
+            "Не удалось сформировать счёт.\n"
+            "Проверьте настройки в WayForPay: merchantAccount, merchantDomainName, ключ (WFP_SECRET) "
+            "и Service URL. Попробуйте снова."
+        )
 
 @router.chat_join_request()
 async def on_join(event: ChatJoinRequest):
     if await has_active_access(event.from_user.id):
         await event.approve()
-        await event.bot.send_message(event.from_user.id, "Доступ надано. Ласкаво просимо!" if settings.LANG=='ua' else "Доступ предоставлен. Добро пожаловать!")
+        await event.bot.send_message(
+            event.from_user.id,
+            "Доступ надано. Ласкаво просимо!" if settings.LANG=='ua' else "Доступ предоставлен. Добро пожаловать!"
+        )
     else:
-        await event.bot.send_message(event.from_user.id, "У вас немає активної підписки. Натисніть /buy і після оплати знову подайте запит." if settings.LANG=='ua' else "У вас нет активной подписки. Нажмите /buy и после оплаты снова запросите доступ.")
+        await event.bot.send_message(
+            event.from_user.id,
+            "У вас немає активної підписки. Натисніть /buy і після оплати знову подайте запит."
+            if settings.LANG=='ua' else
+            "У вас нет активной подписки. Нажмите /buy и после оплаты снова запросите доступ."
+        )
