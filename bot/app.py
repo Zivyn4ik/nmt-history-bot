@@ -17,7 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 from .config import settings
 from .db import init_db
 from .handlers import router as handlers_router
-from .handlers_wipe import router as wipe_router  # ⬅ подключаем новый роутер
+from .handlers_wipe import router as wipe_router            # тестовая команда /wipe_me
+from .handlers_buy import router as buy_router              # ⬅ добавлено: надёжный хендлер /buy
 from .services import enforce_expirations
 from .payments.wayforpay import process_callback
 
@@ -30,7 +31,8 @@ bot = Bot(
 )
 dp = Dispatcher()
 dp.include_router(handlers_router)
-dp.include_router(wipe_router)  # ⬅ регистрируем обработчик /wipe_me
+dp.include_router(wipe_router)  # обработчик /wipe_me (отписка и очистка БД)
+dp.include_router(buy_router)   # ⬅ добавлено: обработчик /buy с try/except
 
 # ---------------- FastAPI ----------------
 app = FastAPI(title="TG Subscription Bot")
