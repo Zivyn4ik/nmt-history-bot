@@ -37,10 +37,20 @@ def make_bases(
     return out
 
 def make_sign_candidates(base: str, secret: str) -> List[str]:
-    return [
-        md5_hex(base + secret),
-        md5_hex(secret + base),
-        md5_hex(base + ";" + secret),
+    base = base.strip()
+    secret = secret.strip()
+    
+    candidates = [
+        md5_hex(base + secret),                         # стандартный
+        md5_hex(secret + base),                         # обратный порядок
+        md5_hex(base + ";" + secret),                   # с разделителем
+        md5_hex(base.replace(" ", "") + secret),        # без пробелов
+        md5_hex(base.replace(" ", "").replace(";", "") + secret),  # без пробелов и точек с запятой
+    ]
+    
+    # удалим дубликаты и вернём
+    return list(set(candidates))
+
     ]
 
 async def create_invoice(
