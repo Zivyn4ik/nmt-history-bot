@@ -60,10 +60,10 @@ async def healthz():
 async def thanks_page():
     return HTMLResponse("<h3>Дякуємо за оплату! Можете повернутися до бота.</h3>")
 
-# NEW: точка возврата после оплаты. Принимает POST/GET и редиректит в Telegram
+# ✅ Точка возврата после оплаты
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return():
-    # 303 See Other: корректно переводит POST в GET и открывает t.me
+    # 303 See Other — корректный редирект на Telegram при POST-запросах
     return RedirectResponse(settings.TG_JOIN_REQUEST_URL, status_code=303)
 
 @app.post("/telegram/webhook")
