@@ -1,10 +1,12 @@
-
 from __future__ import annotations
+
 from datetime import datetime, timezone, date
 from typing import Optional
+
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, BigInteger, DateTime, Date
+from sqlalchemy import String, BigInteger, DateTime, Date, Integer
+
 from .config import settings
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
@@ -17,7 +19,9 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
@@ -26,17 +30,21 @@ class Subscription(Base):
     paid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     grace_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_reminded_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 class Payment(Base):
     __tablename__ = "payments"
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
     order_ref: Mapped[str] = mapped_column(String(128), unique=True)
     amount: Mapped[str] = mapped_column(String(32))
     currency: Mapped[str] = mapped_column(String(8))
     status: Mapped[str] = mapped_column(String(16))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 async def init_db():
     async with engine.begin() as conn:
