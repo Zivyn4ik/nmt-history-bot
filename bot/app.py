@@ -1,7 +1,8 @@
-
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
+
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, HTMLResponse
 from aiogram import Bot, Dispatcher
@@ -27,8 +28,26 @@ dp.include_router(handlers_router)
 # --- FastAPI app ---
 app = FastAPI(title="TG Subscription Bot")
 
+
+# ---------- helpers ----------
+def normalize_base_url(u: str) -> str:
+    """
+    Гарантируем схему https и убираем хвостовой слэш.
+    """
+    u = (u or "").strip()
+    if not urlparse(u).scheme:
+        u = "https://" + u
+    return u.rstrip("/")
+
+
+# ---------- routes ----------
 @app.get("/")
 async def root():
+    return {"ok": True}
+
+@app.get("/healthz")
+async def healthz():
+    # настроить этот путь как Health Check Path в Render
     return {"ok": True}
 
 @app.get("/thanks")
@@ -51,20 +70,23 @@ async def wayforpay_callback(req: Request):
     await process_callback(bot, data)
     return {"ok": True}
 
+
+# ---------- lifecycle ----------
 @app.on_event("startup")
 async def on_startup():
     await init_db()
-    # set webhook
+
+    # set webhook (без двойного https)
     try:
-        webhook_url = settings.BASE_URL.rstrip("/") + "/telegram/webhook"
-await bot.set_webhook(webhook_url)
-        log.info("Telegram webhook set to https://%s/telegram/webhook", settings.BASE_URL)
+        base = normalize_base_url(settings.BASE_URL)
+        webhook_url = f"{base}/telegram/webhook"
+        await bot.set_webhook(webhook_url)
+        log.info("Telegram webhook set to %s", webhook_url)
     except Exception as e:
         log.exception("Failed to set webhook: %s", e)
 
-    # scheduler for daily checks / reminders
+    # ежедневный джоб (пример: 09:00 UTC)
     scheduler = AsyncIOScheduler(timezone="UTC")
-    # run every day at 09:00 UTC
     scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), kwargs={"bot": bot})
     scheduler.start()
     log.info("Scheduler started")
