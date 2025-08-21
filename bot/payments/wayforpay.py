@@ -6,7 +6,7 @@ import hmac
 import hashlib
 import logging
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
 import httpx
 
@@ -17,37 +17,38 @@ log = logging.getLogger("bot.payments")
 WFP_API = "https://api.wayforpay.com/api"
 
 
-# ---------- вспомогательные функции ----------
+# ---------- helpers ----------
 
 def money2(x: float | int | str) -> str:
     """
-    Денежное представление СТРОКОЙ ровно с 2 знаками: '100.00', '2.10', '2.00'
+    Денежное представление СТРОКОЙ ровно с 2 знаками: '100.00', '2.10', '2.00'.
+    Одно и то же текстовое значение используется и в payload, и в строке подписи.
     """
     return str(Decimal(str(x)).quantize(Decimal("0.00"), rounding=ROUND_HALF_UP))
 
 
 def hmac_md5_hex(message: str, secret: str) -> str:
     """
-    Правильная подпись для WayForPay: HMAC-MD5(message, key=secret)
+    Подпись для WayForPay — HMAC-MD5(message, key=secret)
     """
     return hmac.new(secret.strip().encode("utf-8"),
                     message.strip().encode("utf-8"),
                     hashlib.md5).hexdigest()
 
 
-def make_base_signature_string(
+def make_base(
     merchant: str,
     domain: str,
     order_ref: str,
     order_date: int,
-    amount_str: str,      # уже money2()
+    amount_str: str,
     currency: str,
     product_name: str,
     product_count: int = 1,
-    product_price_str: Optional[str] = None,  # по умолчанию = amount_str
+    product_price_str: Optional[str] = None,
 ) -> str:
     """
-    Каноническая строка для подписи по документации WayForPay:
+    Каноническая формула строки подписи по WFP:
     merchantAccount;merchantDomainName;orderReference;orderDate;amount;currency;productName;productCount;productPrice
     """
     if product_price_str is None:
@@ -58,19 +59,19 @@ def make_base_signature_string(
     )
 
 
-# ---------- публичные функции ----------
+# ---------- public API ----------
 
 async def create_invoice(
     user_id: int,
     amount: float,
     currency: str = "UAH",
-    product_name: str = "Access to course (1 month)",
+    product_name: str = "Channel subscription (1 month)",
 ) -> str:
     """
     Создаёт инвойс WayForPay и возвращает URL формы оплаты.
-    Бросает RuntimeError при ошибке.
+    После оплаты WFP откроет settings.TG_JOIN_REQUEST_URL (join-request на ваш канал),
+    а подтверждение оплаты придёт на serviceUrl (callback) — им бот активирует подписку.
     """
-    # Уникальная ссылка заказа
     order_date = int(time.time())
     order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
 
@@ -78,12 +79,10 @@ async def create_invoice(
     domain = settings.WFP_DOMAIN.strip()
     secret = settings.WFP_SECRET.strip()
 
-    amt = money2(amount)  # '2.00'
-    price = amt
+    amt = money2(amount)
     count = 1
 
-    # Строка подписи (каноническая)
-    base = make_base_signature_string(
+    base = make_base(
         merchant=merchant,
         domain=domain,
         order_ref=order_ref,
@@ -92,7 +91,7 @@ async def create_invoice(
         currency=currency,
         product_name=product_name,
         product_count=count,
-        product_price_str=price,
+        product_price_str=amt,
     )
     signature = hmac_md5_hex(base, secret)
 
@@ -104,19 +103,23 @@ async def create_invoice(
         "orderReference": order_ref,
         "orderDate": order_date,
 
-        # ВАЖНО: те же символьные значения, что и в base
-        "amount": amt,                  # строка '2.00'
+        # ВАЖНО: строковые значения с 2 знаками — те же, что в base:
+        "amount": amt,
         "currency": currency,
         "productName": [product_name],
-        "productPrice": [price],        # строка '2.00'
-        "productCount": [count],        # целое число 1
+        "productPrice": [amt],
+        "productCount": [count],
 
-        "returnUrl": f"{settings.BASE_URL}/thanks",
+        # После оплаты сразу кидаем клиента в join-request ссылку канала:
+        "returnUrl": settings.TG_JOIN_REQUEST_URL,
+
+        # Callback подтверждения оплаты — оставляем на ваш бэкенд:
         "serviceUrl": f"{settings.BASE_URL}/payments/wayforpay/callback",
+
         "merchantSignature": signature,
     }
 
-    # Диагностика — видно в логах Render
+    # Диагностика
     print("📤 WFP payload (no signature):", {k: v for k, v in payload.items() if k != "merchantSignature"})
     print("🔧 base =", base)
     print("🔑 signature =", signature)
@@ -131,34 +134,29 @@ async def create_invoice(
             log.exception("HTTP error while creating WFP invoice")
             raise RuntimeError(f"WayForPay HTTP error: {e}")
 
-    # Успех — один из URL присутствует
     invoice_url = data.get("invoiceUrl") or data.get("formUrl") or data.get("url")
     if invoice_url:
         return invoice_url
 
-    # Частые коды: 1109/1113/1133
-    reason = data.get("reason", "")
     code = data.get("reasonCode")
+    reason = data.get("reason", "")
     raise RuntimeError(f"WayForPay error: {code} — {reason}")
 
 
 def verify_callback_signature(_data: Dict[str, Any]) -> bool:
     """
-    При необходимости можно проверить подпись callback'а.
-    В большинстве интеграций WFP callback принимают без проверки.
-    Оставляем True, чтобы не блокировать успешные оплаты.
+    При желании здесь можно реализовать проверку подписи коллбэка.
+    Сейчас оставляем True, чтобы не блокировать успешные оплаты.
     """
     return True
 
 
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     """
-    Обработка callback от WayForPay.
-    Ожидается словарь с полями transactionStatus и orderReference.
+    Обработка callback от WFP: активируем/продлеваем подписку при статусе approved.
     """
     try:
-        ok_sig = verify_callback_signature(data)
-        if not ok_sig:
+        if not verify_callback_signature(data):
             print("⚠️ Callback signature failed:", data)
             return
 
@@ -166,18 +164,12 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
         order_ref = data.get("orderReference", "")
         print("✅ WFP callback received:", status, order_ref)
 
-        if not order_ref.startswith("sub-"):
-            print("ℹ️ Skip non-subscription order:", order_ref)
-            return
-
-        if status in ("approved", "accept", "success"):
-            # user_id извлекаем из order_ref вида: "sub-{user_id}-{ts}-{rand}"
+        if status in ("approved", "accept", "success") and order_ref.startswith("sub-"):
             try:
                 user_id = int(order_ref.split("-")[1])
             except Exception:
                 print("🚫 Cannot parse user_id from order_ref:", order_ref)
                 return
-
             try:
                 await activate_or_extend(bot, user_id)
                 print("🎉 subscription activated/extended for", user_id)
@@ -185,6 +177,5 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
                 log.exception("Failed to activate subscription for user %s (order %s)", user_id, order_ref)
         else:
             print("ℹ️ Non-success status:", status)
-
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
