@@ -17,8 +17,8 @@ from apscheduler.triggers.cron import CronTrigger
 from .config import settings
 from .db import init_db
 from .handlers import router as handlers_router
-from .handlers_wipe import router as wipe_router            # тестовая команда /wipe_me
-from .handlers_buy import router as buy_router              # ⬅ добавлено: надёжный хендлер /buy
+from .handlers_wipe import router as wipe_router
+from .handlers_buy import router as buy_router
 from .services import enforce_expirations
 from .payments.wayforpay import process_callback
 
@@ -30,39 +30,34 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
-dp.include_router(handlers_router)
-dp.include_router(wipe_router)  # обработчик /wipe_me (отписка и очистка БД)
-dp.include_router(buy_router)   # ⬅ добавлено: обработчик /buy с try/except
+dp.include_router(handlers_router)  # /start + автоподтверждение заявок
+dp.include_router(wipe_router)      # /wipe_me (тестовая отписка и очистка)
+dp.include_router(buy_router)       # /buy
 
 # ---------------- FastAPI ----------------
 app = FastAPI(title="TG Subscription Bot")
-
 
 # ---------- helpers ----------
 def normalize_base_url(u: str) -> str:
     """Добавляет https:// при необходимости и убирает хвостовой слэш."""
     u = (u or "").strip()
-    if not urlparse(u).scheme:
+    parsed = urlparse(u)
+    if not parsed.scheme:
         u = "https://" + u
     return u.rstrip("/")
-
 
 # ---------- routes ----------
 @app.get("/")
 async def root():
     return {"ok": True}
 
-
 @app.get("/healthz")
 async def healthz():
-    # Укажите этот путь в Render как Health Check Path
     return {"ok": True}
-
 
 @app.get("/thanks")
 async def thanks_page():
     return HTMLResponse("<h3>Дякуємо за оплату! Можете повернутися до бота.</h3>")
-
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
@@ -70,7 +65,6 @@ async def telegram_webhook(request: Request):
     update = Update.model_validate(data)
     await dp.feed_update(bot, update)
     return JSONResponse({"ok": True})
-
 
 @app.post("/payments/wayforpay/callback")
 async def wayforpay_callback(req: Request):
@@ -80,7 +74,6 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
-
 
 # ---------- lifecycle ----------
 @app.on_event("startup")
@@ -105,7 +98,6 @@ async def on_startup():
     )
     scheduler.start()
     log.info("Scheduler started")
-
 
 @app.on_event("shutdown")
 async def on_shutdown():
