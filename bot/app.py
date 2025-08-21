@@ -60,11 +60,21 @@ async def healthz():
 async def thanks_page():
     return HTMLResponse("<h3>Дякуємо за оплату! Можете повернутися до бота.</h3>")
 
-# ✅ Точка возврата после оплаты
+# ✅ Заменённый wfp_return с HTML и редиректом
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return():
-    # 303 See Other — корректный редирект на Telegram при POST-запросах
-    return RedirectResponse(settings.TG_JOIN_REQUEST_URL, status_code=303)
+    return HTMLResponse("""
+    <html>
+    <head>
+        <title>Оплата успішна ✅</title>
+        <meta http-equiv="refresh" content="1;url=https://t.me/+your_channel_invite">
+    </head>
+    <body style="background-color: #111; color: #eee; text-align: center; padding-top: 100px;">
+        <h2>✅ Оплата пройшла успішно</h2>
+        <p>Зачекайте або <a href="https://t.me/+your_channel_invite" style="color: #4cc9f0;">перейдіть у Telegram канал вручну</a>.</p>
+    </body>
+    </html>
+    """)
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
@@ -88,7 +98,6 @@ async def wayforpay_callback(req: Request):
 async def on_startup():
     await init_db()
 
-    # Устанавливаем вебхук
     try:
         base = normalize_base_url(settings.BASE_URL)
         webhook_url = f"{base}/telegram/webhook"
@@ -97,7 +106,6 @@ async def on_startup():
     except Exception as e:
         log.exception("Failed to set webhook: %s", e)
 
-    # Планировщик ежедневных задач (пример: 09:00 UTC)
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
         enforce_expirations,
