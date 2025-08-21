@@ -7,22 +7,23 @@ import hashlib
 import logging
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 
 import httpx
+from sqlalchemy import select
 
 from ..config import settings
 from ..services import activate_or_extend
+from ..db import Session, Subscription, Payment  # ⬅ понадобятся для идемпотентности
 
 log = logging.getLogger("bot.payments")
 WFP_API = "https://api.wayforpay.com/api"
 
 # ---------- helpers ----------
 def money2(x: float | int | str) -> str:
-    """Ровно 2 знака после точки в виде строки."""
     return str(Decimal(str(x)).quantize(Decimal("0.00"), rounding=ROUND_HALF_UP))
 
 def hmac_md5_hex(message: str, secret: str) -> str:
-    """Подпись WayForPay — HMAC-MD5(message, key=secret)."""
     return hmac.new(secret.strip().encode("utf-8"),
                     message.strip().encode("utf-8"),
                     hashlib.md5).hexdigest()
@@ -63,7 +64,6 @@ async def create_invoice(
     base = make_base(merchant, domain, order_ref, order_date, amt, currency, product_name, 1, amt)
     signature = hmac_md5_hex(base, secret)
 
-    # ВАЖНО: returnUrl теперь на ваш домен → /wfp/return, который делает 303 на t.me
     return_url = settings.BASE_URL.rstrip("/") + "/wfp/return"
     service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
 
@@ -74,12 +74,12 @@ async def create_invoice(
         "apiVersion": 1,
         "orderReference": order_ref,
         "orderDate": order_date,
-        "amount": amt,               # строка 'NNN.MM'
+        "amount": amt,
         "currency": currency,
         "productName": [product_name],
-        "productPrice": [amt],       # строка 'NNN.MM'
+        "productPrice": [amt],
         "productCount": [1],
-        "returnUrl": return_url,     # <= теперь наш эндпоинт
+        "returnUrl": return_url,
         "serviceUrl": service_url,
         "merchantSignature": signature,
     }
@@ -99,11 +99,19 @@ async def create_invoice(
         raise RuntimeError(f"WayForPay error: {data.get('reasonCode')} — {data.get('reason')}")
     return url
 
+
 def verify_callback_signature(_data: Dict[str, Any]) -> bool:
-    # можно добавить проверку, если понадобится
+    # при необходимости можно добавить проверку
     return True
 
+
 async def process_callback(bot, data: Dict[str, Any]) -> None:
+    """
+    Идемпотентная обработка коллбэка:
+    - игнорируем дубликаты одного и того же orderReference;
+    - игнорируем «старые» коллбеки, если после создания инвойса пользователь успел сделать /unsubscribe
+      (сравниваем ts из order_ref с subscriptions.updated_at).
+    """
     try:
         if not verify_callback_signature(data):
             print("⚠️ Callback signature failed:", data)
@@ -111,14 +119,56 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
 
         status = (data.get("transactionStatus") or data.get("status") or "").lower()
         order_ref = data.get("orderReference", "")
+        amount = str(data.get("amount") or "0")
+        currency = str(data.get("currency") or "")
         print("✅ WFP callback received:", status, order_ref)
 
-        if status in ("approved", "accept", "success") and order_ref.startswith("sub-"):
-            try:
-                user_id = int(order_ref.split("-")[1])
-            except Exception:
-                print("🚫 Cannot parse user_id from order_ref:", order_ref)
+        if not (status in ("approved", "accept", "success") and order_ref.startswith("sub-")):
+            return
+
+        try:
+            _, uid_str, ts_str, *_ = order_ref.split("-")
+            user_id = int(uid_str)
+            order_ts = int(ts_str)
+            order_dt = datetime.fromtimestamp(order_ts, tz=timezone.utc)
+        except Exception:
+            print("🚫 Cannot parse order_ref:", order_ref)
+            return
+
+        # 1) защита от дубликатов по order_ref
+        async with Session() as s:
+            res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
+            pay = res.scalar_one_or_none()
+            if pay and pay.status == "approved":
+                print("↩︎ Duplicate callback ignored:", order_ref)
                 return
-            await activate_or_extend(bot, user_id)
+
+        # 2) защита от «старых» коллбеков после /unsubscribe
+        async with Session() as s:
+            sub = await s.get(Subscription, user_id)
+            if sub and sub.updated_at and sub.updated_at.replace(tzinfo=timezone.utc) > order_dt:
+                print("⛔ Stale callback ignored (wiped after invoice):", order_ref)
+                return
+
+        # 3) фиксируем/обновляем запись платежа
+        async with Session() as s:
+            if pay:
+                pay.status = "approved"
+                pay.amount = amount
+                pay.currency = currency
+            else:
+                pay = Payment(
+                    user_id=user_id,
+                    order_ref=order_ref,
+                    amount=amount,
+                    currency=currency,
+                    status="approved",
+                )
+                s.add(pay)
+            await s.commit()
+
+        # 4) продлеваем доступ
+        await activate_or_extend(bot, user_id)
+
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
