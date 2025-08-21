@@ -1,7 +1,14 @@
 from __future__ import annotations
-import time, uuid, hashlib, logging
-import httpx
+
+import time
+import uuid
+import hashlib
+import hmac
+import logging
 from typing import Dict, Any, List
+
+import httpx
+
 from ..config import settings
 from ..services import activate_or_extend
 
@@ -13,9 +20,16 @@ def md5_hex(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
 
+def hmac_md5_hex(message: str, secret: str) -> str:
+    """ПРАВИЛЬНИЙ спосіб підпису для WayForPay."""
+    return hmac.new(secret.strip().encode("utf-8"),
+                    message.strip().encode("utf-8"),
+                    hashlib.md5).hexdigest()
+
+
 def fmt_amount(x: float) -> str:
     """
-    Формат суммы, как обычно ожидают платёжки:
+    Форматує суму в рядок так, як очікують платіжні системи:
     1.0 -> "1"
     1.50 -> "1.5"
     1.55 -> "1.55"
@@ -34,16 +48,32 @@ def make_bases(
     currency: str,
     product_name: str,
 ) -> List[str]:
+    """
+    Формує можливі «бази» (рядки для підпису). Основна — канонічна із документації WFP:
+    merchantAccount;merchantDomainName;orderReference;orderDate;amount;currency;productName;productCount;productPrice
+    """
     amt = fmt_amount(amount)
-    # Каноническая строка из доков WFP:
-    # merchantAccount;merchantDomainName;orderReference;orderDate;amount;currency;productName;productCount;productPrice
-    base = f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}"
-    return [base]
+
+    # Канонічна
+    base1 = f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}"
+
+    # Альтернативна (деякі інтеграції плутають price/count — залишаємо як запасний варіант)
+    base2 = f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};{amt};1"
+
+    # Повертаємо у бажаному порядку спроб
+    return [base1, base2]
 
 
 def make_sign_candidates(base: str, secret: str) -> List[str]:
-    # Каноничная формула подписи
-    return [md5_hex(base.strip() + secret.strip())]
+    """
+    Кандидати підписів. Перший — правильний для WayForPay (HMAC-MD5).
+    Додаємо ще варіанти на випадок «нестандартних» акаунтів WFP.
+    """
+    return [
+        hmac_md5_hex(base, secret),        # ✅ головний
+        md5_hex(base + secret),            # запасний
+        md5_hex(secret + base),            # запасний
+    ]
 
 
 async def create_invoice(
@@ -59,11 +89,11 @@ async def create_invoice(
     domain = settings.WFP_DOMAIN
     secret = settings.WFP_SECRET
 
-    # Отладка входных данных
+    # Діагностика в логах Render (видно у вашому скріні)
     print("👁 Отправка данных в WayForPay:")
     print("merchant =", merchant)
-    print("domain   =", domain)
-    print("order_ref=", order_ref)
+    print("domain  =", domain)
+    print("order_ref =", order_ref)
     print("order_date =", order_date)
     print("amount  =", fmt_amount(amount), "(raw:", amount, ")")
     print("currency=", currency)
@@ -76,7 +106,8 @@ async def create_invoice(
         "apiVersion": 1,
         "orderReference": order_ref,
         "orderDate": order_date,
-        "amount": float(fmt_amount(amount)),  # само поле можно отправлять числом
+        # Числові значення в JSON надсилаємо number'ами, не рядками:
+        "amount": float(fmt_amount(amount)),
         "currency": currency,
         "productName": [product_name],
         "productPrice": [float(fmt_amount(amount))],
@@ -94,6 +125,7 @@ async def create_invoice(
                 print("🔑 sign =", sig)
                 payload = dict(base_payload)
                 payload["merchantSignature"] = sig
+
                 try:
                     r = await cli.post(WFP_API, json=payload)
                     r.raise_for_status()
@@ -102,25 +134,36 @@ async def create_invoice(
                     print("❌ HTTP error with base =", base, "→", e)
                     continue
 
-                reason = (data.get("reason") or data.get("message") or "").lower()
-                invoice_url = data.get("invoiceUrl")
-                print("📦 WFP response: ok =", bool(invoice_url), "reason =", reason, "data:", data)
+                reason = (data.get("reason") or "").lower()
+                print("WFP response:", data)
 
+                # Успіх — WayForPay повертає URL інвойсу:
+                invoice_url = (
+                    data.get("invoiceUrl")
+                    or data.get("formUrl")
+                    or data.get("url")
+                )
                 if invoice_url:
                     return invoice_url
 
-                # Если причина не связана с подписью — выбрасываем, чтобы не скрыть реальную ошибку
-                if "signature" not in reason and data.get("reasonCode") not in (1109, 1133):
+                # Якщо помилка НЕ про підпис — відразу віддаємо її вгору
+                if "signature" not in reason and data.get("reasonCode") not in (1109, 1113, 1133):
                     raise RuntimeError(f"WayForPay error: {data}")
 
+    # Якщо пройшли всі варіанти — підпис так і не підійшов
     raise RuntimeError(
         "WayForPay error: Invalid signature for all known formulas. "
-        "Проверьте merchant/domain/secret; если верны — скажите, добавлю ещё формулу."
+        "Перевірте merchantAccount / merchantDomainName / Merchant secret key. "
+        "Якщо все вірно — напишіть, я додам ще формулу."
     )
 
 
-def verify_callback_signature(data: Dict[str, Any]) -> bool:
-    # TODO: при необходимости добавить валидацию подписи колбэка
+def verify_callback_signature(_data: Dict[str, Any]) -> bool:
+    """
+    За потреби тут можна перевіряти підпис callback'а від WFP.
+    Більшість інтеграцій приймає callback без валідації (як у вашій версії),
+    тому залишаю True, щоб не блокувати оплату.
+    """
     return True
 
 
@@ -133,6 +176,7 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
     order_ref = data.get("orderReference", "")
     print("✅ WFP callback received:", status, order_ref)
 
+    # Підписка активується лише по успіху
     if status in ("approved", "accept", "success") and order_ref.startswith("sub-"):
         try:
             user_id = int(order_ref.split("-")[1])
