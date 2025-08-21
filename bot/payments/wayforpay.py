@@ -21,34 +21,11 @@ def make_bases(
     product_name: str,
 ) -> List[str]:
     amt = f"{amount:.2f}"
-    bases = [
-        f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}",
-        f"{merchant};{domain};{order_ref};{amt};{currency};{product_name};1;{amt}",
-        f"{merchant};{domain};{order_ref};{order_date};{amt};{currency}",
-        f"{merchant};{domain};{order_ref};{amt};{currency}",
-        f"{merchant};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}",
-        f"{merchant};{order_ref};{amt};{currency}",
-    ]
-    seen, out = set(), []
-    for b in bases:
-        if b not in seen:
-            seen.add(b)
-            out.append(b)
-    return out
+    base = f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}"
+    return [base]
 
 def make_sign_candidates(base: str, secret: str) -> List[str]:
-    base = base.strip()
-    secret = secret.strip()
-
-    candidates = [
-        md5_hex(base + secret),                              # стандартный
-        md5_hex(secret + base),                              # обратный порядок
-        md5_hex(base + ";" + secret),                        # с разделителем
-        md5_hex(base.replace(" ", "") + secret),             # без пробелов
-        md5_hex(base.replace(" ", "").replace(";", "") + secret),  # без пробелов и точек с запятой
-    ]
-
-    return list(set(candidates))  # убираем дубликаты
+    return [md5_hex(base + secret)]
 
 async def create_invoice(
     user_id: int,
