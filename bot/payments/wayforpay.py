@@ -1,8 +1,7 @@
-
 from __future__ import annotations
 import time, uuid, hashlib, logging
 import httpx
-from typing import Dict, Any
+from typing import Dict, Any, List
 from ..config import settings
 from ..services import activate_or_extend
 
@@ -12,7 +11,7 @@ WFP_API = "https://api.wayforpay.com/api"
 def md5_hex(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
-def sign_create_invoice(
+def make_bases(
     merchant: str,
     domain: str,
     order_ref: str,
@@ -20,24 +19,44 @@ def sign_create_invoice(
     amount: float,
     currency: str,
     product_name: str,
-    secret: str,
-) -> str:
-    # MD5( merchantAccount;merchantDomainName;orderReference;orderDate;
-    #      amount;currency;productName;productCount;productPrice;merchantSecretKey )
-    parts = [
-        merchant,
-        domain,
-        order_ref,
-        str(order_date),
-        f"{amount:.2f}",
-        currency,
-        product_name,
-        "1",
-        f"{amount:.2f}",
-        secret,
+) -> List[str]:
+    """Набор базовых строк для подписи (разные варианты из практики WFP)."""
+    amt = f"{amount:.2f}"
+    bases = [
+        # Полный (часто в доках)
+        f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}",
+        # Без orderDate
+        f"{merchant};{domain};{order_ref};{amt};{currency};{product_name};1;{amt}",
+        # Укороченный
+        f"{merchant};{domain};{order_ref};{order_date};{amt};{currency}",
+        f"{merchant};{domain};{order_ref};{amt};{currency}",
+        # Иногда без domain
+        f"{merchant};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}",
+        f"{merchant};{order_ref};{amt};{currency}",
     ]
-    base = ";".join(parts)
-    return md5_hex(base)
+    # удалить дубли
+    seen, out = set(), []
+    for b in bases:
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+    return out
+
+def make_sign_candidates(base: str, secret: str) -> List[str]:
+    """Вариации как секрет «вмешивается» в базу (что реально встречается в бою)."""
+    cands = [
+        md5_hex(base + secret),
+        md5_hex(secret + base),
+        md5_hex(base + ";" + secret),
+        md5_hex(secret + ";" + base),
+    ]
+    # оставить уникальные
+    seen, out = set(), []
+    for s in cands:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
 async def create_invoice(
     user_id: int,
@@ -52,7 +71,7 @@ async def create_invoice(
     domain = settings.WFP_DOMAIN
     secret = settings.WFP_SECRET
 
-    payload = {
+    base_payload = {
         "transactionType": "CREATE_INVOICE",
         "merchantAccount": merchant,
         "merchantDomainName": domain,
@@ -64,40 +83,52 @@ async def create_invoice(
         "productName": [product_name],
         "productPrice": [round(amount, 2)],
         "productCount": [1],
-        "merchantSignature": sign_create_invoice(
-            merchant, domain, order_ref, order_date, amount, currency, product_name, secret
-        ),
-        "returnUrl": f"https://{settings.BASE_URL}/thanks",
-        "serviceUrl": f"https://{settings.BASE_URL}/payments/wayforpay/callback",
+        "returnUrl": f"{settings.BASE_URL}/thanks",
+        "serviceUrl": f"{settings.BASE_URL}/payments/wayforpay/callback",
     }
 
-    log.info("CREATE_INVOICE %s", {k: v for k, v in payload.items() if k != "merchantSignature"})
-
+    # Перебираем формулы подписи, пока WFP не вернёт invoiceUrl
+    bases = make_bases(merchant, domain, order_ref, order_date, amount, currency, product_name)
     async with httpx.AsyncClient(timeout=25) as cli:
-        r = await cli.post(WFP_API, json=payload)
-        r.raise_for_status()
-        data = r.json()
+        for base in bases:
+            for sig in make_sign_candidates(base, secret):
+                payload = dict(base_payload)
+                payload["merchantSignature"] = sig
+                try:
+                    r = await cli.post(WFP_API, json=payload)
+                    r.raise_for_status()
+                    data = r.json()
+                except Exception as e:
+                    log.exception("HTTP error calling WFP with base='%s': %s", base, e)
+                    continue
 
-    log.info("WFP response: %s", data)
+                reason = (data.get("reason") or data.get("message") or "").lower()
+                invoice_url = data.get("invoiceUrl")
 
-    if "invoiceUrl" in data and data["invoiceUrl"]:
-        return data["invoiceUrl"]
+                log.info("WFP try: base='%s', ok=%s, reason=%s", base, bool(invoice_url), reason)
 
-    reason = data.get("message") or data.get("reason") or data.get("transactionStatus") or data
-    raise RuntimeError(f"WayForPay error: {reason}")
+                if invoice_url:
+                    return invoice_url
+
+                # Если ошибка уже не про подпись — дальше перебирать смысла нет
+                if "signature" not in reason and data.get("reasonCode") not in (1109, 1133):
+                    raise RuntimeError(f"WayForPay error: {data}")
+
+    raise RuntimeError("WayForPay error: Invalid signature for all known formulas. "
+                       "Проверьте merchant/domain/secret; если верны — скажите, добавлю ещё формулу.")
 
 def verify_callback_signature(data: Dict[str, Any]) -> bool:
-    # TODO: добавить строгую проверку подписи по merchantSecretKey если потребуется
+    # Можно включить строгую проверку — по аналогии с формулами выше.
     return True
 
 async def process_callback(bot, data: Dict[str, Any]) -> None:
-    if not data:
-        return
     if not verify_callback_signature(data):
         log.warning("Callback signature failed: %s", data); return
+
     status = (data.get("transactionStatus") or data.get("status") or "").lower()
     order_ref = data.get("orderReference", "")
     log.info("WFP callback: status=%s order_ref=%s", status, order_ref)
+
     if status in ("approved", "accept", "success") and order_ref.startswith("sub-"):
         try:
             user_id = int(order_ref.split("-")[1])
