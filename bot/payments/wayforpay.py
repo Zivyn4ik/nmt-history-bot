@@ -20,21 +20,15 @@ def make_bases(
     currency: str,
     product_name: str,
 ) -> List[str]:
-    """Набор базовых строк для подписи (разные варианты из практики WFP)."""
     amt = f"{amount:.2f}"
     bases = [
-        # Полный (часто в доках)
         f"{merchant};{domain};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}",
-        # Без orderDate
         f"{merchant};{domain};{order_ref};{amt};{currency};{product_name};1;{amt}",
-        # Укороченный
         f"{merchant};{domain};{order_ref};{order_date};{amt};{currency}",
         f"{merchant};{domain};{order_ref};{amt};{currency}",
-        # Иногда без domain
         f"{merchant};{order_ref};{order_date};{amt};{currency};{product_name};1;{amt}",
         f"{merchant};{order_ref};{amt};{currency}",
     ]
-    # удалить дубли
     seen, out = set(), []
     for b in bases:
         if b not in seen:
@@ -43,20 +37,11 @@ def make_bases(
     return out
 
 def make_sign_candidates(base: str, secret: str) -> List[str]:
-    """Вариации как секрет «вмешивается» в базу (что реально встречается в бою)."""
-    cands = [
+    return [
         md5_hex(base + secret),
         md5_hex(secret + base),
         md5_hex(base + ";" + secret),
-        md5_hex(secret + ";" + base),
     ]
-    # оставить уникальные
-    seen, out = set(), []
-    for s in cands:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
 
 async def create_invoice(
     user_id: int,
@@ -70,6 +55,15 @@ async def create_invoice(
     merchant = settings.WFP_MERCHANT
     domain = settings.WFP_DOMAIN
     secret = settings.WFP_SECRET
+
+    print("👁 Отправка данных в WayForPay:")
+    print("merchant =", merchant)
+    print("domain =", domain)
+    print("order_ref =", order_ref)
+    print("order_date =", order_date)
+    print("amount =", round(amount, 2))
+    print("currency =", currency)
+    print("product_name =", product_name)
 
     base_payload = {
         "transactionType": "CREATE_INVOICE",
@@ -87,11 +81,12 @@ async def create_invoice(
         "serviceUrl": f"{settings.BASE_URL}/payments/wayforpay/callback",
     }
 
-    # Перебираем формулы подписи, пока WFP не вернёт invoiceUrl
     bases = make_bases(merchant, domain, order_ref, order_date, amount, currency, product_name)
     async with httpx.AsyncClient(timeout=25) as cli:
         for base in bases:
+            print("🔧 base =", base)
             for sig in make_sign_candidates(base, secret):
+                print("🔑 sign =", sig)
                 payload = dict(base_payload)
                 payload["merchantSignature"] = sig
                 try:
@@ -99,18 +94,17 @@ async def create_invoice(
                     r.raise_for_status()
                     data = r.json()
                 except Exception as e:
-                    log.exception("HTTP error calling WFP with base='%s': %s", base, e)
+                    print("❌ HTTP error with base =", base, "→", e)
                     continue
 
                 reason = (data.get("reason") or data.get("message") or "").lower()
                 invoice_url = data.get("invoiceUrl")
 
-                log.info("WFP try: base='%s', ok=%s, reason=%s", base, bool(invoice_url), reason)
+                print("📦 WFP response: ok =", bool(invoice_url), "reason =", reason)
 
                 if invoice_url:
                     return invoice_url
 
-                # Если ошибка уже не про подпись — дальше перебирать смысла нет
                 if "signature" not in reason and data.get("reasonCode") not in (1109, 1133):
                     raise RuntimeError(f"WayForPay error: {data}")
 
@@ -118,20 +112,21 @@ async def create_invoice(
                        "Проверьте merchant/domain/secret; если верны — скажите, добавлю ещё формулу.")
 
 def verify_callback_signature(data: Dict[str, Any]) -> bool:
-    # Можно включить строгую проверку — по аналогии с формулами выше.
     return True
 
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     if not verify_callback_signature(data):
-        log.warning("Callback signature failed: %s", data); return
+        print("⚠️ Callback signature failed:", data)
+        return
 
     status = (data.get("transactionStatus") or data.get("status") or "").lower()
     order_ref = data.get("orderReference", "")
-    log.info("WFP callback: status=%s order_ref=%s", status, order_ref)
+    print("✅ WFP callback received:", status, order_ref)
 
     if status in ("approved", "accept", "success") and order_ref.startswith("sub-"):
         try:
             user_id = int(order_ref.split("-")[1])
         except Exception:
-            log.exception("Cannot parse user_id from order_ref=%s", order_ref); return
+            print("🚫 Cannot parse user_id from order_ref:", order_ref)
+            return
         await activate_or_extend(bot, user_id)
