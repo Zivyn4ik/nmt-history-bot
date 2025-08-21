@@ -13,18 +13,18 @@ from .config import settings
 
 router = Router()
 
-# Отдельный лёгкий движок для прямых SQL-команд
+# Отдельный лёгкий движок для прямых SQL-команд (не мешаем основным сессиям)
 _engine = create_async_engine(settings.DATABASE_URL, future=True, echo=False)
 
 
 async def _wipe_user_data(user_id: int) -> int:
     """
     Удаляет все записи по пользователю из всех таблиц SQLite, где есть столбец user_id.
-    Возвращает количество таблиц, в которых что-то удалили.
+    Возвращает количество таблиц, в которых были удалены строки.
     """
     affected = 0
     async with _engine.begin() as conn:
-        # перечень таблиц
+        # перечень таблиц (кроме служебных)
         res = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
         tables = [r[0] for r in res if r[0] not in ("sqlite_sequence", "alembic_version")]
 
@@ -37,6 +37,7 @@ async def _wipe_user_data(user_id: int) -> int:
                 await conn.execute(text(f'DELETE FROM "{t}" WHERE user_id = :uid'), {"uid": user_id})
                 affected += 1
             elif t in ("users", "user") and "id" in colnames:
+                # на случай отдельной таблицы users
                 await conn.execute(text(f'DELETE FROM "{t}" WHERE id = :uid'), {"uid": user_id})
                 affected += 1
     return affected
@@ -45,8 +46,8 @@ async def _wipe_user_data(user_id: int) -> int:
 @router.message(Command(commands=["unsubscribe", "wipe_me"]))
 async def cmd_unsubscribe(message: Message, bot: Bot):
     """
-    ТЕСТОВАЯ команда: выкидывает пользователя из канала и очищает его данные в БД.
-    Работает только в личке с ботом.
+    ТЕСТОВАЯ команда: выкидывает пользователя из канала и полностью очищает его данные в БД.
+    Работает только в ЛИЧКИХ с ботом.
     """
     if message.chat.type != ChatType.PRIVATE:
         return
@@ -59,23 +60,24 @@ async def cmd_unsubscribe(message: Message, bot: Bot):
     except Exception:
         pass
 
-    # 2) кикнуть из канала (бан/анбан, чтобы можно было зайти снова)
+    # 2) кикнуть из канала (бан/анбан, чтобы потом можно было зайти снова)
     kicked = False
     try:
         await bot.ban_chat_member(chat_id=settings.CHANNEL_ID, user_id=user_id)
         await bot.unban_chat_member(chat_id=settings.CHANNEL_ID, user_id=user_id)
         kicked = True
     except Exception:
-        pass  # не в канале / нет прав — игнорируем
+        # не в канале / нет прав — не критично
+        pass
 
-    # 3) удалить из БД
+    # 3) удалить все следы в БД
     try:
         affected = await _wipe_user_data(user_id)
     except Exception as e:
         affected = -1
         print("wipe_me DB error:", e)
 
-    # 4) ответ пользователю
+    # 4) финальное сообщение пользователю
     parts = []
     if kicked:
         parts.append("Вас видалено з каналу.")
@@ -83,6 +85,6 @@ async def cmd_unsubscribe(message: Message, bot: Bot):
         parts.append(f"Дані у БД очищено (таблиць: {affected}).")
     else:
         parts.append("Частину даних очистити не вдалося.")
-
     parts.append("Для повторного доступу оформіть підписку ще раз: /buy")
+
     await message.answer("🧹 " + " ".join(parts))
