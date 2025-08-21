@@ -4,7 +4,7 @@ import logging
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse, HTMLResponse
+from starlette.responses import JSONResponse, HTMLResponse, RedirectResponse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -30,21 +30,22 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
-dp.include_router(handlers_router)  # /start + автоподтверждение заявок
-dp.include_router(wipe_router)      # /wipe_me (тестовая отписка и очистка)
+dp.include_router(handlers_router)  # /start + автоапрув join-request
+dp.include_router(wipe_router)      # /wipe_me
 dp.include_router(buy_router)       # /buy
 
 # ---------------- FastAPI ----------------
 app = FastAPI(title="TG Subscription Bot")
 
+
 # ---------- helpers ----------
 def normalize_base_url(u: str) -> str:
     """Добавляет https:// при необходимости и убирает хвостовой слэш."""
     u = (u or "").strip()
-    parsed = urlparse(u)
-    if not parsed.scheme:
+    if not urlparse(u).scheme:
         u = "https://" + u
     return u.rstrip("/")
+
 
 # ---------- routes ----------
 @app.get("/")
@@ -58,6 +59,12 @@ async def healthz():
 @app.get("/thanks")
 async def thanks_page():
     return HTMLResponse("<h3>Дякуємо за оплату! Можете повернутися до бота.</h3>")
+
+# NEW: точка возврата после оплаты. Принимает POST/GET и редиректит в Telegram
+@app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
+async def wfp_return():
+    # 303 See Other: корректно переводит POST в GET и открывает t.me
+    return RedirectResponse(settings.TG_JOIN_REQUEST_URL, status_code=303)
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
@@ -75,12 +82,13 @@ async def wayforpay_callback(req: Request):
     await process_callback(bot, data)
     return {"ok": True}
 
+
 # ---------- lifecycle ----------
 @app.on_event("startup")
 async def on_startup():
     await init_db()
 
-    # Устанавливаем вебхук (без «двойного https»)
+    # Устанавливаем вебхук
     try:
         base = normalize_base_url(settings.BASE_URL)
         webhook_url = f"{base}/telegram/webhook"
