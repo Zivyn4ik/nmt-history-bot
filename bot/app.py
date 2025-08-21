@@ -42,8 +42,12 @@ async def telegram_webhook(update: dict):
     return JSONResponse({"ok": True})
 
 @app.post("/thanks")
-async def thanks():
-    return HTMLResponse("<h3>Дякуємо! Якщо оплата пройшла, бот надішле запрошення автоматично.</h3>")
+async def payment_callback(request: Request):
+    data = await request.form()
+    # Перевірка підпису WayForPay
+    # Оновлення статусу підписки в БД
+    return {"status": "ok"}
+
 
 @app.post("/payments/wayforpay/callback")
 async def wayforpay_callback(req: Request):
