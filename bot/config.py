@@ -3,7 +3,7 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     BOT_TOKEN: str = Field(...)
-    CHANNEL_ID: int = Field(...)
+    CHANNEL_ID: int = Field(...)                  # ID канала (-100…)
     BASE_URL: str = Field(...)
     WFP_MERCHANT: str = Field(...)
     WFP_SECRET: str = Field(...)
@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     PRODUCT_NAME: str = Field(default="Channel subscription (1 month)")
     LANG: str = Field(default="ua")
     DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./bot.sqlite3")
+
+    # ⬇️ НОВОЕ: join-request ссылка Telegram-канала
+    TG_JOIN_REQUEST_URL: str = Field(...)
 
     class Config:
         env_file = ".env"
