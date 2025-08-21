@@ -56,7 +56,8 @@ async def on_startup():
     await init_db()
     # set webhook
     try:
-        await bot.set_webhook(f"https://{settings.BASE_URL}/telegram/webhook")
+        webhook_url = settings.BASE_URL.rstrip("/") + "/telegram/webhook"
+await bot.set_webhook(webhook_url)
         log.info("Telegram webhook set to https://%s/telegram/webhook", settings.BASE_URL)
     except Exception as e:
         log.exception("Failed to set webhook: %s", e)
