@@ -63,6 +63,10 @@ async def create_invoice(
     base = make_base(merchant, domain, order_ref, order_date, amt, currency, product_name, 1, amt)
     signature = hmac_md5_hex(base, secret)
 
+    # ВАЖНО: returnUrl теперь на ваш домен → /wfp/return, который делает 303 на t.me
+    return_url = settings.BASE_URL.rstrip("/") + "/wfp/return"
+    service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
+
     payload = {
         "transactionType": "CREATE_INVOICE",
         "merchantAccount": merchant,
@@ -75,8 +79,8 @@ async def create_invoice(
         "productName": [product_name],
         "productPrice": [amt],       # строка 'NNN.MM'
         "productCount": [1],
-        "returnUrl": settings.TG_JOIN_REQUEST_URL,  # сразу в канал (join-request)
-        "serviceUrl": settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback",
+        "returnUrl": return_url,     # <= теперь наш эндпоинт
+        "serviceUrl": service_url,
         "merchantSignature": signature,
     }
 
@@ -107,7 +111,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
 
         status = (data.get("transactionStatus") or data.get("status") or "").lower()
         order_ref = data.get("orderReference", "")
-
         print("✅ WFP callback received:", status, order_ref)
 
         if status in ("approved", "accept", "success") and order_ref.startswith("sub-"):
