@@ -41,7 +41,7 @@ async def telegram_webhook(update: dict):
     await dp.feed_update(bot, Update.model_validate(update))
     return JSONResponse({"ok": True})
 
-@app.get("/thanks")
+@app.post("/thanks")
 async def thanks():
     return HTMLResponse("<h3>Дякуємо! Якщо оплата пройшла, бот надішле запрошення автоматично.</h3>")
 
