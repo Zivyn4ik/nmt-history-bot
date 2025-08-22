@@ -10,48 +10,59 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
+from .services import ensure_user, has_active_access, get_subscription_status
+from .config import settings
+
 router = Router()
 
 
-def _start_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
-            [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
-            [InlineKeyboardButton(text="💬 Підтримка", url="https://t.me/zivyn4ik")],
-        ]
-    )
+def start_keyboard(has_access: bool) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
+        [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
+        [InlineKeyboardButton(text="🛟 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
+    ]
+    # если доступ уже активен, первую кнопку заменим на вход в канал
+    if has_access:
+        rows[0] = [InlineKeyboardButton(text="➡️ Увійти в канал", url=settings.TG_JOIN_REQUEST_URL)]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(CommandStart())
-async def start_handler(message: Message):
-    text = (
-        "👋 <b>Вітаємо у навчальному боті HMT 2026 | Історія України!</b>\n\n"
-        "📚 Тут ви отримаєте доступ до:\n"
-        "• Таблиць для підготовки до НМТ\n"
-        "• Тестів та завдань з поясненнями\n"
-        "• Корисних матеріалів від викладачів\n\n"
-        "💳 Щоб отримати доступ — скористайтесь кнопками нижче."
-    )
-    await message.answer(text, reply_markup=_start_keyboard())
+async def cmd_start(message: Message, bot: Bot):
+    await ensure_user(message.from_user)
+
+    active = await has_active_access(message.from_user.id)
+    kb = start_keyboard(active)
+
+    if active:
+        sub = await get_subscription_status(message.from_user.id)
+        until_text = sub.paid_until.strftime("%Y-%m-%d") if sub and sub.paid_until else "невідомо"
+        await message.answer(
+            f"🎉 Вітаємо у навчальному боті НМТ 2026 | Історія України!\n\n"
+            f"✅ Підписка активна до {until_text}. Тисніть, щоб увійти:",
+            reply_markup=kb,
+        )
+    else:
+        await message.answer(
+            "👋 Вітаємо у навчальному боті НМТ 2026 | Історія України!\n\n"
+            "❌ Підписки немає або вона завершилась. Скористайтесь кнопками нижче.",
+            reply_markup=kb,
+        )
 
 
-# --- callbacks ---
+# --------- CALLBACKS ---------
 
 @router.callback_query(F.data == "buy")
 async def cb_buy(call: CallbackQuery, bot: Bot):
-    # вызывем уже готовый обработчик покупки
-    from .handlers_buy import cmd_buy  # локальный импорт, чтобы избежать цикличности
+    # локальный импорт, чтобы избегать цикличности
+    from .handlers_buy import send_buy_button
     await call.answer()
-    # эмулируем /buy для текущего чата
-    await cmd_buy(call.message, bot)
+    await send_buy_button(call.message, bot)
 
 
 @router.callback_query(F.data == "check")
 async def cb_check(call: CallbackQuery, bot: Bot):
-    # повторно показываем старт, т.к. в /start у тебя уже выводится статус
-    from .handlers import cmd_start  # локальный импорт
     await call.answer()
+    # Повторно показываем старт, в нём уже корректная логика статуса
     await cmd_start(call.message, bot)
-
-
