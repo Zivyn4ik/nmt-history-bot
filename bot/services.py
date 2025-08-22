@@ -21,30 +21,46 @@ class SubStatus:
     paid_until: date | None
 
 
-# ----------------- USERS -----------------
+# ---------- helpers ----------
+def _user_columns() -> set[str]:
+    # названия доступных колонок модели User
+    return set(User.__table__.columns.keys())
 
+
+def _set_if_column(obj, colset: set[str], name: str, value):
+    if name in colset:
+        setattr(obj, name, value)
+
+
+# ----------------- USERS -----------------
 async def ensure_user(tg_user) -> None:
+    """
+    Создаёт пользователя или мягко обновляет профиль.
+    Пишем ТОЛЬКО существующие в модели поля.
+    """
+    cols = _user_columns()
     async with Session() as s:
         dbu = await s.get(User, tg_user.id)
         if dbu is None:
-            dbu = User(
-                id=tg_user.id,
-                first_name=tg_user.first_name or "",
-                last_name=tg_user.last_name or "",
-                username=tg_user.username or "",
-            )
+            dbu = User(id=tg_user.id)  # только id обязателен
+            _set_if_column(dbu, cols, "username", tg_user.username or "")
+            _set_if_column(dbu, cols, "first_name", getattr(tg_user, "first_name", "") or "")
+            _set_if_column(dbu, cols, "last_name", getattr(tg_user, "last_name", "") or "")
+            _set_if_column(dbu, cols, "updated_at", now())
             s.add(dbu)
             await s.commit()
         else:
-            # лёгкое обновление профиля
-            dbu.first_name = tg_user.first_name or dbu.first_name
-            dbu.last_name = tg_user.last_name or dbu.last_name
-            dbu.username = tg_user.username or dbu.username
+            # мягкое обновление профиля, только существующие поля
+            _set_if_column(dbu, cols, "username", tg_user.username or getattr(dbu, "username", ""))
+            if "first_name" in cols:
+                _set_if_column(dbu, cols, "first_name", getattr(tg_user, "first_name", "") or getattr(dbu, "first_name", ""))
+            if "last_name" in cols:
+                _set_if_column(dbu, cols, "last_name", getattr(tg_user, "last_name", "") or getattr(dbu, "last_name", ""))
+            _set_if_column(dbu, cols, "updated_at", now())
             await s.commit()
 
 
 # ----------------- SUBSCRIPTIONS -----------------
-
 async def get_subscription_status(user_id: int) -> SubStatus:
     async with Session() as s:
         res = await s.execute(select(Subscription).where(Subscription.user_id == user_id))
@@ -52,8 +68,7 @@ async def get_subscription_status(user_id: int) -> SubStatus:
         if not sub:
             return SubStatus(status=None, paid_until=None)
 
-        # "active" только если есть paid_until и оно не в прошлом
-        is_active = sub.paid_until and sub.paid_until >= now().date()
+        is_active = bool(sub.paid_until and sub.paid_until >= now().date())
         return SubStatus(
             status="active" if is_active else "expired",
             paid_until=sub.paid_until,
@@ -77,16 +92,13 @@ async def update_subscription(user_id: int, **fields) -> None:
 
 async def activate_or_extend(bot: Bot, user_id: int, months: int = 1) -> None:
     """
-    Активирует или продлевает подписку после подтвержденной оплаты.
-    Тут же отправляем пользователю корректное сообщение и ссылку.
+    Активирует/продлевает подписку только после подтверждённой оплаты.
     """
     async with Session() as s:
         res = await s.execute(select(Subscription).where(Subscription.user_id == user_id))
         sub = res.scalar_one_or_none()
         today = now().date()
 
-        # новая оплата: если подписка ещё активна, продлеваем от paid_until,
-        # иначе — от сегодняшней даты
         if sub and sub.paid_until and sub.paid_until >= today:
             start_from = sub.paid_until + timedelta(days=1)
         else:
@@ -109,17 +121,18 @@ async def activate_or_extend(bot: Bot, user_id: int, months: int = 1) -> None:
 
         await s.commit()
 
-    # отправляем ссылку и пробуем одобрить join-request, если висит
+    # Сообщение пользователю + попытка авто-апрува join-request
     try:
         await bot.send_message(
             user_id,
-            f"✅ Оплату підтверджено. Підписка активна до {new_until:%Y-%m-%d}.\nТисніть, щоб увійти: {settings.TG_JOIN_REQUEST_URL}",
+            f"✅ Оплату підтверджено. Підписка активна до {new_until:%Y-%m-%d}.\n"
+            f"Тисніть, щоб увійти: {settings.TG_JOIN_REQUEST_URL}",
         )
     except Exception:
         pass
 
     try:
-        await bot.approve_chat_join_request(settings.CHANNEL_ID, user_id)  # если есть запрос — одобрится
+        await bot.approve_chat_join_request(settings.CHANNEL_ID, user_id)
     except TelegramBadRequest:
         pass
     except Exception:
@@ -128,9 +141,7 @@ async def activate_or_extend(bot: Bot, user_id: int, months: int = 1) -> None:
 
 async def enforce_expirations(bot: Bot) -> None:
     """
-    Ежедневно приводим статусы в порядок и вычищаем доступы,
-    у которых закончился grace-период (3 дня).
-    Никаких сообщений “активна до …” здесь не шлём!
+    Ежедневно обновляем статусы; ничего лишнего пользователю не пишем.
     """
     moment = now()
     today = moment.date()
@@ -140,11 +151,9 @@ async def enforce_expirations(bot: Bot) -> None:
         subs = list(res.scalars())
 
     for sub in subs:
-        # истекла — переводим в expired
         if sub.status == "active" and sub.paid_until and sub.paid_until < today:
             await update_subscription(sub.user_id, status="expired", updated_at=moment)
 
-        # жёсткое выключение после grace
         if (
             sub.status == "active"
             and sub.paid_until
