@@ -24,7 +24,7 @@ log = logging.getLogger("app")
 
 app = FastAPI()
 
-# Важно: здесь используем именно BOT_TOKEN (как в config.py)
+# ВАЖНО: используем именно BOT_TOKEN (как в config.py)
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
