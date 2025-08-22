@@ -6,7 +6,6 @@ from typing import Optional
 
 from aiogram import Bot
 from aiogram.enums.chat_member_status import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, update
 
 from .db import Session, User, Subscription
@@ -37,7 +36,7 @@ async def ensure_user(tg_user) -> None:
 
 
 def _tz_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    """Возвращает datetime aware в UTC (если было naive — помечаем как UTC)."""
+    """Сделать datetime timezone-aware (UTC)."""
     if dt is None:
         return None
     if dt.tzinfo is None:
@@ -46,11 +45,7 @@ def _tz_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 async def get_subscription_status(user_id: int) -> SubInfo:
-    """
-    Возвращает статус подписки с paid_until, гарантированно timezone-aware (UTC).
-    Это устраняет ситуацию, когда на кнопке «проверка статуса» всегда пишет «нет подписки»
-    из-за сравнения naive- и aware-datetime.
-    """
+    """Вернуть статус подписки и paid_until (UTC-aware)."""
     async with Session() as s:
         sub = await s.get(Subscription, user_id)
         if not sub:
@@ -61,7 +56,7 @@ async def get_subscription_status(user_id: int) -> SubInfo:
 
 
 async def update_subscription(user_id: int, **fields) -> None:
-    # Нормализуем датовые поля в UTC, если их передают извне
+    """Обновить поля подписки (нормализуя даты в UTC)."""
     if "paid_until" in fields:
         fields["paid_until"] = _tz_aware_utc(fields["paid_until"])
     if "grace_until" in fields:
@@ -77,10 +72,7 @@ async def update_subscription(user_id: int, **fields) -> None:
 
 
 async def has_active_access(user_id: int) -> bool:
-    """
-    Проверка «можно ли держать пользователя в канале».
-    Здесь учитываем 3 дня grace-периода (как у тебя было).
-    """
+    """Можно ли держать пользователя в канале (учитывая 3 дня grace)."""
     async with Session() as s:
         sub = await s.get(Subscription, user_id)
         if not sub or sub.status != "active" or not sub.paid_until:
@@ -90,13 +82,10 @@ async def has_active_access(user_id: int) -> bool:
 
 
 async def is_member_of_channel(bot: Bot, channel_id: int, user_id: int) -> bool:
-    """
-    Фактическая проверка членства в канале.
-    Важно: channel_id должен быть числом формата -100xxxxxxxxxx, не @username.
-    """
+    """Фактическая проверка членства в канале."""
     try:
-        member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        return member.status in {
+        m = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        return m.status in {
             ChatMemberStatus.OWNER,
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.MEMBER,
@@ -105,8 +94,26 @@ async def is_member_of_channel(bot: Bot, channel_id: int, user_id: int) -> bool:
         return False
 
 
+async def create_join_request_link(bot: Bot, user_id: int) -> str:
+    """
+    Сгенерировать ПРАВИЛЬНУЮ ссылку: с запросом на вступление (не мгновенную).
+    Делает персональную ссылку с лимитом 1 и коротким TTL, чтобы её нельзя было «утянуть».
+    """
+    # короткий срок жизни ссылки (например, 3 дня)
+    expire_ts = int(now().timestamp()) + 3 * 24 * 60 * 60
+
+    link_obj = await bot.create_chat_invite_link(
+        chat_id=settings.CHANNEL_ID,
+        name=f"joinreq-{user_id}-{int(now().timestamp())}",
+        expire_date=expire_ts,          # истекает быстро
+        member_limit=1,                 # не более 1 вступления по ссылке
+        creates_join_request=True,      # КЛЮЧЕВОЕ: нужна заявка на вступление
+    )
+    return link_obj.invite_link
+
+
 async def activate_or_extend(bot: Bot, user_id: int) -> None:
-    """Активирует или продлевает подписку на 30 дней и отправляет ссылку в канал."""
+    """Активирует или продлевает подписку на 30 дней и выдаёт ссылку с join-request."""
     async with Session() as s:
         sub = await s.get(Subscription, user_id)
         if not sub:
@@ -115,7 +122,6 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
             await s.flush()
 
         current = now()
-        # если подписка ещё действует — продлеваем от её конца, иначе от текущего момента
         base = _tz_aware_utc(sub.paid_until) if sub.paid_until else current
         if base < current:
             base = current
@@ -128,18 +134,22 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
         sub.updated_at = current
         await s.commit()
 
-    # Пытаемся одобрить заявку, если она уже есть
+    # Если пользователь уже подал заявку — одобряем её
     try:
         await bot.approve_chat_join_request(settings.CHANNEL_ID, user_id)
     except Exception:
+        # Если ещё нет заявки — просто отправим ссылку, чтобы он подал её корректно
         pass
 
-    # И всё равно отправим ссылку
+    # Выдаём ТОЛЬКО join-request ссылку (никаких мгновенных инвайтов)
     try:
+        invite = await create_join_request_link(bot, user_id)
         await bot.send_message(
             user_id,
-            f"Підписка активна до <b>{new_until.date()}</b>. "
-            f"Натисніть, щоб увійти до каналу:\n{settings.TG_JOIN_REQUEST_URL}",
+            (
+                f"Підписка активна до <b>{new_until.date()}</b>.\n"
+                f"Натисніть, щоб подати заявку на вступ:\n{invite}"
+            ),
             parse_mode="HTML",
         )
     except Exception:
