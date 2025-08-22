@@ -1,37 +1,45 @@
 # bot/handlers_buy.py
 from __future__ import annotations
 
-import logging
-from aiogram import Router, Bot
-from aiogram.filters import Command
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from .config import settings
+from .services import ensure_user
 from .payments.wayforpay import create_invoice
+from .config import settings
 
 router = Router()
-log = logging.getLogger("handlers.buy")
 
-@router.message(Command("buy"))
+def _pay_kb(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатити", url=url)]
+    ])
+
+@router.message(F.text == "/buy")
 async def cmd_buy(message: Message, bot: Bot):
-    """
-    Создаёт инвойс WayForPay и отправляет кнопку "Оплатити".
-    При любой ошибке покажет понятное сообщение и запишет трассу в логи.
-    """
-    user_id = message.from_user.id
-    try:
-        url = await create_invoice(
-            user_id=user_id,
-            amount=settings.PRICE,
-            currency=settings.CURRENCY,
-            product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription (1 month)"),
-        )
-    except Exception as e:
-        log.exception("Failed to create invoice for user %s: %s", user_id, e)
-        await message.answer(f"Не вдалося сформувати рахунок. Причина: {e}")
-        return
+    user_id = message.from_user.id  # <-- ВАЖНО: ИД ПОЛЬЗОВАТЕЛЯ
+    await ensure_user(message.from_user)
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Оплатити", url=url)]]
+    amount = getattr(settings, "PRICE_UAH", 1.00)
+    url = await create_invoice(
+        user_id=user_id,
+        amount=amount,
+        currency="UAH",
+        product_name="Місячна підписка",
     )
-    await message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=kb)
+    await message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
+
+@router.callback_query(F.data == "buy_open")
+async def on_buy_open(cb: CallbackQuery, bot: Bot):
+    user_id = cb.from_user.id  # <-- ВАЖНО: ИД ПОЛЬЗОВАТЕЛЯ
+    await ensure_user(cb.from_user)
+
+    amount = getattr(settings, "PRICE_UAH", 1.00)
+    url = await create_invoice(
+        user_id=user_id,
+        amount=amount,
+        currency="UAH",
+        product_name="Місячна підписка",
+    )
+    await cb.message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
+    await cb.answer()
