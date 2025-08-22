@@ -1,3 +1,4 @@
+# bot/payments/wayforpay.py
 from __future__ import annotations
 
 import time
@@ -6,7 +7,7 @@ import hmac
 import hashlib
 import logging
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from datetime import datetime, timezone
 
 import httpx
@@ -14,161 +15,105 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..services import activate_or_extend
-from ..db import Session, Subscription, Payment  # ⬅ понадобятся для идемпотентности
+from ..db import Session, Subscription
 
-log = logging.getLogger("bot.payments")
-WFP_API = "https://api.wayforpay.com/api"
+log = logging.getLogger("payments.wfp")
 
-# ---------- helpers ----------
-def money2(x: float | int | str) -> str:
-    return str(Decimal(str(x)).quantize(Decimal("0.00"), rounding=ROUND_HALF_UP))
 
-def hmac_md5_hex(message: str, secret: str) -> str:
-    return hmac.new(secret.strip().encode("utf-8"),
-                    message.strip().encode("utf-8"),
-                    hashlib.md5).hexdigest()
+def _sign(values: list[str], secret: str) -> str:
+    data = ";".join(values).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), data, hashlib.md5).hexdigest()
 
-def make_base(
-    merchant: str,
-    domain: str,
-    order_ref: str,
-    order_date: int,
-    amount_str: str,
-    currency: str,
-    product_name: str,
-    product_count: int = 1,
-    product_price_str: Optional[str] = None,
-) -> str:
-    if product_price_str is None:
-        product_price_str = amount_str
-    return (
-        f"{merchant};{domain};{order_ref};{order_date};"
-        f"{amount_str};{currency};{product_name};{product_count};{product_price_str}"
-    )
 
-# ---------- public API ----------
 async def create_invoice(
     user_id: int,
     amount: float,
-    currency: str = "UAH",
-    product_name: str = "Access to course (1 month)",
+    currency: str,
+    product_name: str,
 ) -> str:
+    """
+    Формирует ссылку WayForPay (инвойс) через API /invoice
+    Возвращает URL на оплату.
+    """
+    amt = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    order_ref = f"{user_id}-{int(time.time())}"
     order_date = int(time.time())
-    order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
 
-    merchant = settings.WFP_MERCHANT.strip()
-    domain = settings.WFP_DOMAIN.strip()
-    secret = settings.WFP_SECRET.strip()
-
-    amt = money2(amount)
-    base = make_base(merchant, domain, order_ref, order_date, amt, currency, product_name, 1, amt)
-    signature = hmac_md5_hex(base, secret)
-
-    return_url = settings.BASE_URL.rstrip("/") + "/wfp/return"
-    service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
-
-    payload = {
+    payload: Dict[str, Any] = {
         "transactionType": "CREATE_INVOICE",
-        "merchantAccount": merchant,
-        "merchantDomainName": domain,
-        "apiVersion": 1,
+        "merchantAccount": settings.WFP_MERCHANT,
+        "merchantDomainName": settings.WFP_DOMAIN,
         "orderReference": order_ref,
         "orderDate": order_date,
-        "amount": amt,
+        "amount": float(amt),
         "currency": currency,
         "productName": [product_name],
-        "productPrice": [amt],
+        "productPrice": [float(amt)],
         "productCount": [1],
-        "returnUrl": return_url,
-        "serviceUrl": service_url,
-        "merchantSignature": signature,
+        "serviceUrl": f"{settings.BASE_URL}/wfp/callback",
+        "clientAccountId": str(user_id),
     }
 
-    print("📤 WFP payload:", {k: v for k, v in payload.items() if k != "merchantSignature"})
-    print("🔧 base =", base)
-    print("🔑 signature =", signature)
+    # подпись по докам WFP
+    sign_order = [
+        settings.WFP_MERCHANT,
+        settings.WFP_DOMAIN,
+        order_ref,
+        str(order_date),
+        str(float(amt)),
+        currency,
+        product_name,
+        "1",
+        str(float(amt)),
+    ]
+    payload["merchantSignature"] = _sign(sign_order, settings.WFP_SECRET)
 
-    async with httpx.AsyncClient(timeout=25) as cli:
-        r = await cli.post(WFP_API, json=payload)
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post("https://api.wayforpay.com/api", json=payload)
         r.raise_for_status()
-        data = r.json()
-        print("📥 WFP response:", data)
+        js = r.json()
 
-    url = data.get("invoiceUrl") or data.get("formUrl") or data.get("url")
-    if not url:
-        raise RuntimeError(f"WayForPay error: {data.get('reasonCode')} — {data.get('reason')}")
-    return url
+    if "invoiceUrl" not in js:
+        raise RuntimeError(f"WFP не повернув invoiceUrl: {js}")
 
-
-def verify_callback_signature(_data: Dict[str, Any]) -> bool:
-    # при необходимости можно добавить проверку
-    return True
+    return js["invoiceUrl"]
 
 
-async def process_callback(bot, data: Dict[str, Any]) -> None:
+async def process_callback(request, bot) -> Dict[str, Any]:
     """
-    Идемпотентная обработка коллбэка:
-    - игнорируем дубликаты одного и того же orderReference;
-    - игнорируем «старые» коллбеки, если после создания инвойса пользователь успел сделать /unsubscribe
-      (сравниваем ts из order_ref с subscriptions.updated_at).
+    Обработчик callback от WFP (FastAPI будет передавать Request).
+    Принимаем только approved платежи и активируем доступ.
     """
-    try:
-        if not verify_callback_signature(data):
-            print("⚠️ Callback signature failed:", data)
-            return
+    data = await request.json()
+    log.info("WFP callback: %s", data)
 
-        status = (data.get("transactionStatus") or data.get("status") or "").lower()
-        order_ref = data.get("orderReference", "")
-        amount = str(data.get("amount") or "0")
-        currency = str(data.get("currency") or "")
-        print("✅ WFP callback received:", status, order_ref)
+    # минимум полей
+    required = ["merchantAccount", "orderReference", "transactionStatus", "amount", "currency", "clientAccountId"]
+    for k in required:
+        if k not in data:
+            return {"error": f"missing {k}"}
 
-        if not (status in ("approved", "accept", "success") and order_ref.startswith("sub-")):
-            return
+    # проверка подписи
+    sign_src = [
+        data.get("merchantAccount", ""),
+        data.get("orderReference", ""),
+        str(data.get("amount", "")),
+        data.get("currency", ""),
+        data.get("authCode", ""),
+        data.get("cardPan", ""),
+        data.get("transactionStatus", ""),
+        data.get("reasonCode", ""),
+    ]
+    expected = _sign(sign_src, settings.WFP_SECRET)
+    if data.get("merchantSignature") != expected:
+        return {"error": "bad signature"}
 
-        try:
-            _, uid_str, ts_str, *_ = order_ref.split("-")
-            user_id = int(uid_str)
-            order_ts = int(ts_str)
-            order_dt = datetime.fromtimestamp(order_ts, tz=timezone.utc)
-        except Exception:
-            print("🚫 Cannot parse order_ref:", order_ref)
-            return
+    if data.get("transactionStatus") != "Approved":
+        # ничего не делаем, подтверждения нет
+        return {"status": "ignored"}
 
-        # 1) защита от дубликатов по order_ref
-        async with Session() as s:
-            res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-            pay = res.scalar_one_or_none()
-            if pay and pay.status == "approved":
-                print("↩︎ Duplicate callback ignored:", order_ref)
-                return
+    user_id = int(data.get("clientAccountId"))
+    # активируем/продлеваем
+    await activate_or_extend(bot, user_id)
 
-        # 2) защита от «старых» коллбеков после /unsubscribe
-        async with Session() as s:
-            sub = await s.get(Subscription, user_id)
-            if sub and sub.updated_at and sub.updated_at.replace(tzinfo=timezone.utc) > order_dt:
-                print("⛔ Stale callback ignored (wiped after invoice):", order_ref)
-                return
-
-        # 3) фиксируем/обновляем запись платежа
-        async with Session() as s:
-            if pay:
-                pay.status = "approved"
-                pay.amount = amount
-                pay.currency = currency
-            else:
-                pay = Payment(
-                    user_id=user_id,
-                    order_ref=order_ref,
-                    amount=amount,
-                    currency=currency,
-                    status="approved",
-                )
-                s.add(pay)
-            await s.commit()
-
-        # 4) продлеваем доступ
-        await activate_or_extend(bot, user_id)
-
-    except Exception:
-        log.exception("Unhandled error in WFP callback handler")
+    return {"status": "ok"}
