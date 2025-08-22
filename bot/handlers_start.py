@@ -10,18 +10,29 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
+from .config import settings
+from .services import ensure_user, get_subscription_status
+
 router = Router()
 
 
-def _start_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
-            [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
-            [InlineKeyboardButton(text="💬 Підтримка", url="https://t.me/zivyn4ik")],
-        ]
-    )
+# --- keyboards ---------------------------------------------------------------
 
+def _main_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
+        [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
+        [InlineKeyboardButton(text="📞 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
+    ])
+
+
+def _buy_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
+    ])
+
+
+# --- /start ------------------------------------------------------------------
 
 @router.message(CommandStart())
 async def start_handler(message: Message):
@@ -31,27 +42,40 @@ async def start_handler(message: Message):
         "• Таблиць для підготовки до НМТ\n"
         "• Тестів та завдань з поясненнями\n"
         "• Корисних матеріалів від викладачів\n\n"
-        "💳 Щоб отримати доступ — скористайтесь кнопками нижче."
+        "🧭 Скористайтесь кнопками нижче."
     )
-    await message.answer(text, reply_markup=_start_keyboard())
+    await message.answer(text, reply_markup=_main_menu_kb())
 
 
-# --- callbacks ---
+# --- callbacks ---------------------------------------------------------------
 
 @router.callback_query(F.data == "buy")
 async def cb_buy(call: CallbackQuery, bot: Bot):
-    # вызывем уже готовый обработчик покупки
-    from .handlers_buy import cmd_buy  # локальный импорт, чтобы избежать цикличности
+    # запускаем уже существующий обработчик покупки
+    from .handlers_buy import cmd_buy
     await call.answer()
-    # эмулируем /buy для текущего чата
     await cmd_buy(call.message, bot)
 
 
 @router.callback_query(F.data == "check")
-async def cb_check(call: CallbackQuery, bot: Bot):
-    # повторно показываем старт, т.к. в /start у тебя уже выводится статус
-    from .handlers import cmd_start  # локальный импорт
+async def cb_check(call: CallbackQuery):
+    """Проверка статуса без импорта из bot.handlers (чтобы не ловить ImportError)."""
     await call.answer()
-    await cmd_start(call.message, bot)
 
+    user = call.from_user
+    await ensure_user(user)
 
+    sub = await get_subscription_status(user.id)
+    invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
+
+    if getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None):
+        text = f"✅ Підписка активна до <b>{sub.paid_until.date()}</b>."
+        if invite:
+            text += f"\nЯкщо ви ще не в каналі — перейдіть за посиланням:\n{invite}"
+        await call.message.answer(text)
+    else:
+        await call.message.answer(
+            "❌ Підписки немає або вона завершилась.\n\n"
+            "Щоб отримати доступ — натисніть кнопку нижче 👇",
+            reply_markup=_buy_kb(),
+        )
