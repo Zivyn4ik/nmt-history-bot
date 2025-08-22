@@ -21,21 +21,14 @@ from ..db import Session, Payment
 log = logging.getLogger("payments.wayforpay")
 
 WFP_API_URL = "https://api.wayforpay.com/api"
-_processed_refs: set[str] = set()  # отсечка дубликатов
+_processed_refs: set[str] = set()
 
 def _money(x: float | int | str) -> str:
     return str(Decimal(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
-def _sign_create_invoice(
-    merchant: str, domain: str, order_ref: str, order_date: int,
-    amount: str, currency: str, product_name: str, product_price: str,
-) -> str:
-    # merchantAccount;merchantDomainName;orderReference;orderDate;
-    # amount;currency;productName[0];productCount[0];productPrice[0]
-    s = ";".join([
-        merchant, domain, order_ref, str(order_date),
-        amount, currency, product_name, "1", product_price
-    ])
+def _sign_create_invoice(merchant: str, domain: str, order_ref: str, order_date: int,
+                         amount: str, currency: str, product_name: str, product_price: str) -> str:
+    s = ";".join([merchant, domain, order_ref, str(order_date), amount, currency, product_name, "1", product_price])
     return hmac.new(settings.WFP_SECRET.encode(), s.encode(), hashlib.md5).hexdigest()
 
 async def create_invoice(*, user_id: int, amount: float, currency: str, product_name: str) -> str:
@@ -60,7 +53,6 @@ async def create_invoice(*, user_id: int, amount: float, currency: str, product_
         "productPrice": [amt],
         "productCount": [1],
         "serviceUrl": settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback",
-        # "returnUrl": settings.BASE_URL.rstrip("/") + "/thanks",
     }
 
     log.info("WFP CREATE_INVOICE start: ref=%s amount=%s %s", order_ref, amt, currency)
@@ -74,7 +66,6 @@ async def create_invoice(*, user_id: int, amount: float, currency: str, product_
     if not invoice_url:
         raise RuntimeError(f"WFP error: {data}")
 
-    # опциональная фиксация в БД
     try:
         async with Session() as s:
             exists = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
@@ -95,13 +86,13 @@ def _norm_status(s: Optional[str]) -> str:
 
 def _parse_uid(order_ref: str) -> Optional[int]:
     try:
-        if not order_ref.startswith("sub-"): return None
+        if not order_ref.startswith("sub-"):
+            return None
         return int(order_ref.split("-")[1])
     except Exception:
         return None
 
 async def process_callback(request: Request, bot: Bot) -> JSONResponse:
-    """Коллбек WayForPay → активируем подписку, шлём подтверждение, логируем состояние."""
     try:
         payload: Dict[str, Any] = await request.json()
     except Exception:
@@ -137,21 +128,9 @@ async def process_callback(request: Request, bot: Bot) -> JSONResponse:
         except Exception:
             log.exception("WFP: activate/notify failed for user_id=%s", user_id)
 
-        # отметить платеж как approved (если ведёшь таблицу)
-        try:
-            async with Session() as s:
-                res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-                pay = res.scalars().first()
-                if pay:
-                    pay.status = "approved"
-                    await s.commit()
-        except Exception:
-            pass
-
         _processed_refs.add(order_ref)
         return _ok(order_ref)
 
-    # финальные неуспешные
     if status in {"declined", "expired", "voided", "refunded"}:
         try:
             await bot.send_message(user_id, "❌ Оплата не підтверджена або скасована. Спробуйте ще раз через /buy.")
