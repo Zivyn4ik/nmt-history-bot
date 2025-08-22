@@ -1,76 +1,37 @@
-# bot/handlers_start.py
+# bot/handlers_start.py (фрагмент: хендлер кнопки проверки)
 from __future__ import annotations
-
+from datetime import datetime, timezone
 from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
-
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from .config import settings
-from .services import ensure_user, get_subscription_status
+from .services import get_subscription_status, is_member_of_channel
 
 router = Router()
 
-# --- keyboards ---------------------------------------------------------------
+def buy_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy_open")]])
 
-def _main_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
-        [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
-        [InlineKeyboardButton(text="📞 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
-    ])
+@router.callback_query(F.data == "check_status")
+async def on_check_status(cb: CallbackQuery, bot: Bot):
+    user_id = cb.from_user.id
+    now = datetime.now(timezone.utc)
+    sub = await get_subscription_status(user_id)
 
-def _buy_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
-    ])
+    def _fmt(dt): return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if dt else "—"
 
-# --- /start ------------------------------------------------------------------
+    active = bool(sub and sub.status == "active" and sub.paid_until and now <= sub.paid_until)
+    if active:
+        await cb.message.answer(f"✅ Підписка активна.\nДоступ до: <b>{_fmt(sub.paid_until)}</b>", parse_mode="HTML")
+        await cb.answer(); return
 
-@router.message(CommandStart())
-async def start_handler(message: Message):
-    text = (
-        "👋 <b>Вітаємо у навчальному боті HMT 2026 | Історія України!</b>\n\n"
-        "📚 Тут ви отримаєте доступ до:\n"
-        "• Таблиць для підготовки до НМТ\n"
-        "• Тестів та завдань з поясненнями\n"
-        "• Корисних матеріалів від викладачів\n\n"
-        "🧭 Скористайтесь кнопками нижче."
-    )
-    await message.answer(text, reply_markup=_main_menu_kb())
-
-# --- callbacks ---------------------------------------------------------------
-
-@router.callback_query(F.data == "buy")
-async def cb_buy(call: CallbackQuery, bot: Bot):
-    # запускаем существующий обработчик покупки
-    from .handlers_buy import cmd_buy
-    await call.answer()
-    await cmd_buy(call.message, bot)
-
-@router.callback_query(F.data == "check")
-async def cb_check(call: CallbackQuery):
-    """Проверка статуса напрямую, без импорта из bot.handlers (чтобы не ловить ImportError)."""
-    await call.answer()
-
-    user = call.from_user
-    await ensure_user(user)
-
-    sub = await get_subscription_status(user.id)
-    invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
-
-    if getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None):
-        text = f"✅ Підписка активна до <b>{sub.paid_until.date()}</b>."
-        if invite:
-            text += f"\nЯкщо ви ще не в каналі — перейдіть за посиланням:\n{invite}"
-        await call.message.answer(text)
-    else:
-        await call.message.answer(
-            "❌ Підписки немає або вона завершилась.\n\n"
-            "Щоб отримати доступ — натисніть кнопку нижче 👇",
-            reply_markup=_buy_kb(),
+    # фолбек: по факту он внутри канала?
+    if await is_member_of_channel(bot, settings.CHANNEL_ID, user_id):
+        await cb.message.answer(
+            "ℹ️ У вас є доступ до каналу (за фактом членства), але в обліковому записі підписка неактивна. "
+            "Якщо ви щойно оплатили — дочекайтесь синхронізації або натисніть «Оформити підписку».",
+            reply_markup=buy_kb(),
         )
+        await cb.answer(); return
+
+    await cb.message.answer("❌ Підписки немає або вона завершилась.\n\nЩоб отримати доступ — натисніть кнопку нижче 👇", reply_markup=buy_kb())
+    await cb.answer()
