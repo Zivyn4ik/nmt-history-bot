@@ -4,7 +4,7 @@ import logging
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse, HTMLResponse, RedirectResponse
+from starlette.responses import JSONResponse, HTMLResponse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -16,13 +16,18 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .config import settings
 from .db import init_db
-from .handlers import router as handlers_router
-from .handlers_wipe import router as wipe_router
-from .handlers_buy import router as buy_router
+from .handlers_start import router as start_router      # ✅ новое старт-меню
+from .handlers import router as handlers_router         # /start (статус), автоапрув join-request и т.д.
+from .handlers_wipe import router as wipe_router        # /wipe_me
+from .handlers_buy import router as buy_router          # /buy
 from .services import enforce_expirations
 from .payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
+
+# --------- общие настройки ---------
+# единая ссылка-приглашение в канал
+INVITE_URL = getattr(settings, "TG_INVITE_URL", "https://t.me/+kgfXNg9m0Sw5N2Uy")  # <-- при желании задай TG_INVITE_URL в .env
 
 # ---------------- Aiogram ----------------
 bot = Bot(
@@ -30,9 +35,12 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
-dp.include_router(handlers_router)  # /start + автоапрув join-request
-dp.include_router(wipe_router)      # /wipe_me
-dp.include_router(buy_router)       # /buy
+
+# порядок важен: сперва стартовое меню, затем прочие роутеры
+dp.include_router(start_router)      # ✅ кнопки: Оформити підписку / Перевірка / Підтримка
+dp.include_router(handlers_router)   # существующие хендлеры (статус и т.п.)
+dp.include_router(wipe_router)
+dp.include_router(buy_router)
 
 # ---------------- FastAPI ----------------
 app = FastAPI(title="TG Subscription Bot")
@@ -56,39 +64,43 @@ async def root():
 async def healthz():
     return {"ok": True}
 
+# страница благодарности (WayForPay approvedUrl)
 @app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
 async def thanks_page():
-    return HTMLResponse("""
+    return HTMLResponse(f"""
     <html>
     <head>
         <title>Дякуємо за оплату!</title>
-        <meta http-equiv="refresh" content="2;url=https://t.me/+kgfXNg9m0Sw5N2Uy">
+        <meta http-equiv="refresh" content="2;url={INVITE_URL}">
         <style>
-            body { background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }
-            a { color: #4cc9f0; font-size: 18px; }
+            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
+            a {{ color: #4cc9f0; font-size: 18px; }}
         </style>
     </head>
     <body>
         <h2>✅ Оплата пройшла успішно!</h2>
         <p>Через 2 секунди вас буде автоматично перенаправлено у Telegram-канал.</p>
-        <p>Якщо цього не сталося, натисніть <a href="https://t.me/+x6gkdU02VdM2YzUy">сюди</a>.</p>
+        <p>Якщо цього не сталося, натисніть <a href="{INVITE_URL}">сюди</a>.</p>
     </body>
     </html>
     """)
 
-
-# ✅ Заменённый wfp_return с HTML и редиректом
+# запасная точка возврата WayForPay (если где-то ещё используется returnUrl)
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return():
-    return HTMLResponse("""
+    return HTMLResponse(f"""
     <html>
     <head>
         <title>Оплата успішна ✅</title>
-        <meta http-equiv="refresh" content="1;url=https://t.me/+your_channel_invite">
+        <meta http-equiv="refresh" content="1;url={INVITE_URL}">
+        <style>
+            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
+            a {{ color: #4cc9f0; font-size: 18px; }}
+        </style>
     </head>
-    <body style="background-color: #111; color: #eee; text-align: center; padding-top: 100px;">
+    <body>
         <h2>✅ Оплата пройшла успішно</h2>
-        <p>Зачекайте або <a href="https://t.me/+your_channel_invite" style="color: #4cc9f0;">перейдіть у Telegram канал вручну</a>.</p>
+        <p>Зачекайте або <a href="{INVITE_URL}">перейдіть у Telegram канал вручну</a>.</p>
     </body>
     </html>
     """)
@@ -115,6 +127,7 @@ async def wayforpay_callback(req: Request):
 async def on_startup():
     await init_db()
 
+    # ставим вебхук
     try:
         base = normalize_base_url(settings.BASE_URL)
         webhook_url = f"{base}/telegram/webhook"
@@ -123,6 +136,7 @@ async def on_startup():
     except Exception as e:
         log.exception("Failed to set webhook: %s", e)
 
+    # ежедневная проверка/очистка подписок
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
         enforce_expirations,
