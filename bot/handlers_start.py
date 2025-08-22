@@ -31,8 +31,9 @@ def buy_kb() -> InlineKeyboardMarkup:
 @router.callback_query(F.data == "check_status")
 async def on_check_status(cb: CallbackQuery, bot: Bot):
     user_id = cb.from_user.id
+    log.info("check_status click from %s", user_id)
 
-    # Мгновенно подтверждаем нажатие, чтобы не было «часиков»
+    # Мгновенно снимаем «часики»
     try:
         await cb.answer("Перевіряю…", cache_time=1, show_alert=False)
     except Exception:
@@ -48,9 +49,13 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
         active = bool(sub and sub.status == "active" and sub.paid_until and now <= sub.paid_until)
 
         if active:
-            await cb.message.answer(f"✅ Підписка активна.\nДоступ до: <b>{_fmt(sub.paid_until)}</b>", parse_mode="HTML")
+            await cb.message.answer(
+                f"✅ Підписка активна.\nДоступ до: <b>{_fmt(sub.paid_until)}</b>",
+                parse_mode="HTML",
+            )
             return
 
+        # Фолбек: фактичне членство
         in_channel = await is_member_of_channel(bot, settings.CHANNEL_ID, user_id)
         if in_channel:
             await cb.message.answer(
