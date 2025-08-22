@@ -32,7 +32,7 @@ def buy_kb() -> InlineKeyboardMarkup:
 async def on_check_status(cb: CallbackQuery, bot: Bot):
     user_id = cb.from_user.id
 
-    # МГНОВЕННОЕ подтверждение нажатия — снимает «часики» в Telegram
+    # Мгновенно подтверждаем нажатие, чтобы не было «часиков»
     try:
         await cb.answer("Перевіряю…", cache_time=1, show_alert=False)
     except Exception:
@@ -48,13 +48,9 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
         active = bool(sub and sub.status == "active" and sub.paid_until and now <= sub.paid_until)
 
         if active:
-            await cb.message.answer(
-                f"✅ Підписка активна.\nДоступ до: <b>{_fmt(sub.paid_until)}</b>",
-                parse_mode="HTML",
-            )
+            await cb.message.answer(f"✅ Підписка активна.\nДоступ до: <b>{_fmt(sub.paid_until)}</b>", parse_mode="HTML")
             return
 
-        # Фолбек: якщо фактично в каналі — пояснюємо, що БД ще не синхронізувалась
         in_channel = await is_member_of_channel(bot, settings.CHANNEL_ID, user_id)
         if in_channel:
             await cb.message.answer(
@@ -71,7 +67,6 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
 
     except Exception as e:
         log.exception("check_status failed for %s: %s", user_id, e)
-        # Показать пользователю аккуратную ошибку, но БЕЗ зависания кнопки
         try:
             await cb.message.answer("⚠️ Сталася помилка під час перевірки. Спробуйте ще раз трохи пізніше.")
         except Exception:
