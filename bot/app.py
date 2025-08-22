@@ -56,9 +56,26 @@ async def root():
 async def healthz():
     return {"ok": True}
 
-@app.get("/thanks")
+@app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
 async def thanks_page():
-    return HTMLResponse("<h3>Дякуємо за оплату! Можете повернутися до бота.</h3>")
+    return HTMLResponse("""
+    <html>
+    <head>
+        <title>Дякуємо за оплату!</title>
+        <meta http-equiv="refresh" content="2;url=https://t.me/+your_channel_invite">
+        <style>
+            body { background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }
+            a { color: #4cc9f0; font-size: 18px; }
+        </style>
+    </head>
+    <body>
+        <h2>✅ Оплата пройшла успішно!</h2>
+        <p>Через 2 секунди вас буде автоматично перенаправлено у Telegram-канал.</p>
+        <p>Якщо цього не сталося, натисніть <a href="https://t.me/+x6gkdU02VdM2YzUy">сюди</a>.</p>
+    </body>
+    </html>
+    """)
+
 
 # ✅ Заменённый wfp_return с HTML и редиректом
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
