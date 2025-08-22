@@ -17,29 +17,27 @@ def _pay_kb(url: str) -> InlineKeyboardMarkup:
 
 @router.message(F.text == "/buy")
 async def cmd_buy(message: Message, bot: Bot):
-    user_id = message.from_user.id  # <-- ВАЖНО: ИД ПОЛЬЗОВАТЕЛЯ
+    user_id = message.from_user.id
     await ensure_user(message.from_user)
 
-    amount = getattr(settings, "PRICE_UAH", 1.00)
     url = await create_invoice(
         user_id=user_id,
-        amount=amount,
-        currency="UAH",
-        product_name="Місячна підписка",
+        amount=settings.PRICE,
+        currency=settings.CURRENCY,
+        product_name=settings.PRODUCT_NAME,
     )
     await message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
 
 @router.callback_query(F.data == "buy_open")
 async def on_buy_open(cb: CallbackQuery, bot: Bot):
-    user_id = cb.from_user.id  # <-- ВАЖНО: ИД ПОЛЬЗОВАТЕЛЯ
+    user_id = cb.from_user.id
     await ensure_user(cb.from_user)
 
-    amount = getattr(settings, "PRICE_UAH", 1.00)
     url = await create_invoice(
         user_id=user_id,
-        amount=amount,
-        currency="UAH",
-        product_name="Місячна підписка",
+        amount=settings.PRICE,
+        currency=settings.CURRENCY,
+        product_name=settings.PRODUCT_NAME,
     )
     await cb.message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
     await cb.answer()
