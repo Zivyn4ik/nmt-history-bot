@@ -15,9 +15,20 @@ async def cmd_start(message: Message, bot: Bot):
 
     sub = await get_subscription_status(message.from_user.id)
     if sub.status == "active" and sub.paid_until:
-        await message.answer(
-            f"Підписка активна до <b>{sub.paid_until.date()}</b>. Тисніть щоб увійти:\n{settings.TG_JOIN_REQUEST_URL}"
-        )
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+keyboard_buy = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
+    ]
+)
+
+await message.answer(
+    "❌ Підписки немає або вона завершилась.\n\n"
+    "Щоб продовжити доступ — натисніть кнопку нижче 👇",
+    reply_markup=keyboard_buy
+)
+
     else:
         await message.answer(
             "Підписки немає або вона завершилась. Оформіть оплату через /buy"
