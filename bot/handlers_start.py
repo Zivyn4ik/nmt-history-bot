@@ -1,4 +1,3 @@
-# bot/handlers_start.py
 from __future__ import annotations
 
 from aiogram import Router, F, Bot
@@ -9,13 +8,13 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from aiogram.exceptions import TelegramBadRequest
 
 from .config import settings
 from .services import ensure_user, get_subscription_status
 
 router = Router()
 
-# --- keyboards ---------------------------------------------------------------
 
 def _main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -24,12 +23,22 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📞 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
     ])
 
+
 def _buy_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
     ])
 
-# --- /start ------------------------------------------------------------------
+
+async def _is_member(bot: Bot, user_id: int) -> bool:
+    try:
+        cm = await bot.get_chat_member(settings.CHANNEL_ID, user_id)
+        return cm.status in ("member", "administrator", "creator")
+    except TelegramBadRequest:
+        return False
+    except Exception:
+        return False
+
 
 @router.message(CommandStart())
 async def start_handler(message: Message):
@@ -43,34 +52,40 @@ async def start_handler(message: Message):
     )
     await message.answer(text, reply_markup=_main_menu_kb())
 
-# --- callbacks ---------------------------------------------------------------
 
 @router.callback_query(F.data == "buy")
 async def cb_buy(call: CallbackQuery, bot: Bot):
-    # запускаем существующий обработчик покупки
     from .handlers_buy import cmd_buy
     await call.answer()
     await cmd_buy(call.message, bot)
 
-@router.callback_query(F.data == "check")
-async def cb_check(call: CallbackQuery):
-    """Проверка статуса напрямую, без импорта из bot.handlers (чтобы не ловить ImportError)."""
-    await call.answer()
 
+@router.callback_query(F.data == "check")
+async def cb_check(call: CallbackQuery, bot: Bot):
+    await call.answer()
     user = call.from_user
     await ensure_user(user)
 
     sub = await get_subscription_status(user.id)
-    invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
+    has_db_access = bool(getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None))
 
-    if getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None):
+    if has_db_access:
+        invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
         text = f"✅ Підписка активна до <b>{sub.paid_until.date()}</b>."
         if invite:
             text += f"\nЯкщо ви ще не в каналі — перейдіть за посиланням:\n{invite}"
         await call.message.answer(text)
-    else:
+        return
+
+    if await _is_member(bot, user.id):
         await call.message.answer(
-            "❌ Підписки немає або вона завершилась.\n\n"
-            "Щоб отримати доступ — натисніть кнопку нижче 👇",
-            reply_markup=_buy_kb(),
+            "✅ Ви вже маєте доступ до каналу (ви є його учасником).\n"
+            "Якщо оплата була щойно — статус у системі оновиться автоматично."
         )
+        return
+
+    await call.message.answer(
+        "❌ Підписки немає або вона завершилась.\n\n"
+        "Щоб отримати доступ — натисніть кнопку нижче 👇",
+        reply_markup=_buy_kb(),
+    )
