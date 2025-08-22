@@ -35,7 +35,8 @@ async def ensure_user(tg_user) -> None:
             await s.commit()
 
 def _tz(dt: Optional[datetime]) -> Optional[datetime]:
-    if dt is None: return None
+    if dt is None:
+        return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 async def get_subscription_status(user_id: int) -> SubInfo:
@@ -48,7 +49,8 @@ async def get_subscription_status(user_id: int) -> SubInfo:
 
 async def update_subscription(user_id: int, **fields) -> None:
     for k in ("paid_until", "grace_until", "updated_at"):
-        if k in fields: fields[k] = _tz(fields[k])
+        if k in fields:
+            fields[k] = _tz(fields[k])
     async with Session() as s:
         await s.execute(update(Subscription).where(Subscription.user_id == user_id).values(**fields))
         await s.commit()
@@ -74,7 +76,7 @@ async def _create_join_request_link(bot: Bot, user_id: int) -> str:
         name=f"joinreq-{user_id}-{int(now().timestamp())}",
         expire_date=expire,
         member_limit=1,
-        creates_join_request=True,   # КЛЮЧЕВОЕ!
+        creates_join_request=True,
     )
     return link.invite_link
 
@@ -88,7 +90,8 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
 
         current = now()
         base = _tz(sub.paid_until) or current
-        if base < current: base = current
+        if base < current:
+            base = current
 
         new_until = base + timedelta(days=30)
         sub.status = "active"
@@ -98,14 +101,12 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
         await s.commit()
         log.info("SUB UPDATED user_id=%s status=%s paid_until=%s", user_id, sub.status, sub.paid_until)
 
-    # approve if there is a pending request
     try:
         await bot.approve_chat_join_request(settings.CHANNEL_ID, user_id)
         log.info("JOIN REQUEST APPROVED user_id=%s", user_id)
     except Exception:
         pass
 
-    # send a personal join-request link anyway
     try:
         invite = await _create_join_request_link(bot, user_id)
         await bot.send_message(
