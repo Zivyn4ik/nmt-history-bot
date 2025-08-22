@@ -18,7 +18,7 @@ def _start_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
             [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
-            [InlineKeyboardButton(text="📞 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
+            [InlineKeyboardButton(text="💬 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
         ]
     )
 
@@ -53,3 +53,4 @@ async def cb_check(call: CallbackQuery, bot: Bot):
     from .handlers import cmd_start  # локальный импорт
     await call.answer()
     await cmd_start(call.message, bot)
+
