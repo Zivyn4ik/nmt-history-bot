@@ -1,79 +1,45 @@
-# bot/app.py
+# bot/handlers_buy.py
 from __future__ import annotations
 
-import logging
-from fastapi import FastAPI, Request
-from starlette.responses import HTMLResponse
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.types import Update
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
+from .services import ensure_user
+from .payments.wayforpay import create_invoice
 from .config import settings
-from .db import init_db
-from .services import enforce_expirations
-from .handlers_start import router as start_router      # меню, кнопки, проверка статуса
-from .handlers import router as handlers_router         # /start, автоапрув join-request и т.п.
-from .handlers_wipe import router as wipe_router        # /wipe_me
-from .handlers_buy import router as buy_router          # /buy (создание инвойса)
-from .payments.wayforpay import process_callback        # ВАЖНО: импорт обработчика WFP
 
-log = logging.getLogger("app")
+router = Router()
 
-app = FastAPI()
+def _pay_kb(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Оплатити", url=url)]
+    ])
 
-# Инициализируем бота и диспетчер один раз в модуле
-bot = Bot(
-    token=settings.TG_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
-dp = Dispatcher()
+@router.message(F.text == "/buy")
+async def cmd_buy(message: Message, bot: Bot):
+    user_id = message.from_user.id  # <-- ВАЖНО: ИД ПОЛЬЗОВАТЕЛЯ
+    await ensure_user(message.from_user)
 
-# Подключаем роутеры aiogram
-dp.include_router(start_router)
-dp.include_router(handlers_router)
-dp.include_router(wipe_router)
-dp.include_router(buy_router)
+    amount = getattr(settings, "PRICE_UAH", 1.00)
+    url = await create_invoice(
+        user_id=user_id,
+        amount=amount,
+        currency="UAH",
+        product_name="Місячна підписка",
+    )
+    await message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
 
-# --- FastAPI routes ---
+@router.callback_query(F.data == "buy_open")
+async def on_buy_open(cb: CallbackQuery, bot: Bot):
+    user_id = cb.from_user.id  # <-- ВАЖНО: ИД ПОЛЬЗОВАТЕЛЯ
+    await ensure_user(cb.from_user)
 
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    return "<b>NMT History Bot is live</b>"
-
-# Вебхук от Telegram
-@app.post("/telegram/webhook")
-async def telegram_webhook(update: dict):
-    upd = Update.model_validate(update)
-    await dp.feed_update(bot, upd)
-    return {"ok": True}
-
-# КОЛЛБЭК WayForPay — ПЕРЕДАЁМ bot!
-@app.post("/payments/wayforpay/callback")
-async def wfp_callback(request: Request):
-    # Раньше у тебя, вероятно, было: return await process_callback(request)
-    # Нужно вот так, с bot:
-    return await process_callback(request, bot)
-
-# --- lifecycle ---
-
-scheduler: AsyncIOScheduler | None = None
-
-@app.on_event("startup")
-async def on_startup():
-    await init_db()
-    global scheduler
-    scheduler = AsyncIOScheduler()
-    # ежедневно в 09:00 по серверному времени (при желании поменяй)
-    scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), args=[bot])
-    scheduler.start()
-    log.info("App started, scheduler running")
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    global scheduler
-    if scheduler:
-        scheduler.shutdown(wait=False)
-    log.info("App stopped")
+    amount = getattr(settings, "PRICE_UAH", 1.00)
+    url = await create_invoice(
+        user_id=user_id,
+        amount=amount,
+        currency="UAH",
+        product_name="Місячна підписка",
+    )
+    await cb.message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
+    await cb.answer()
