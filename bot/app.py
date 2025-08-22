@@ -1,3 +1,4 @@
+# bot/app.py
 from __future__ import annotations
 
 import logging
@@ -16,135 +17,58 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .config import settings
 from .db import init_db
-from .handlers_start import router as start_router      # ✅ новое старт-меню
-from .handlers import router as handlers_router         # /start (статус), автоапрув join-request и т.д.
-from .handlers_wipe import router as wipe_router        # /wipe_me
-from .handlers_buy import router as buy_router          # /buy
+from .handlers_start import router as start_router
+from .handlers import router as handlers_router
+from .handlers_wipe import router as wipe_router
+from .handlers_buy import router as buy_router
 from .services import enforce_expirations
 from .payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
 
-# --------- общие настройки ---------
-# единая ссылка-приглашение в канал
-INVITE_URL = getattr(settings, "TG_INVITE_URL", "https://t.me/+kgfXNg9m0Sw5N2Uy")  # <-- при желании задай TG_INVITE_URL в .env
-
 # ---------------- Aiogram ----------------
-bot = Bot(
-    token=settings.BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
+bot = Bot(settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-
-# порядок важен: сперва стартовое меню, затем прочие роутеры
-dp.include_router(start_router)      # ✅ кнопки: Оформити підписку / Перевірка / Підтримка
-dp.include_router(handlers_router)   # существующие хендлеры (статус и т.п.)
-dp.include_router(wipe_router)
-dp.include_router(buy_router)
+dp.include_routers(start_router, buy_router, handlers_router, wipe_router)
 
 # ---------------- FastAPI ----------------
-app = FastAPI(title="TG Subscription Bot")
+app = FastAPI()
 
 
-# ---------- helpers ----------
-def normalize_base_url(u: str) -> str:
-    """Добавляет https:// при необходимости и убирает хвостовой слэш."""
-    u = (u or "").strip()
-    if not urlparse(u).scheme:
-        u = "https://" + u
-    return u.rstrip("/")
-
-
-# ---------- routes ----------
-@app.get("/")
-async def root():
-    return {"ok": True}
-
-@app.get("/healthz")
-async def healthz():
-    return {"ok": True}
-
-# страница благодарности (WayForPay approvedUrl)
-@app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
-async def thanks_page():
-    return HTMLResponse(f"""
-    <html>
-    <head>
-        <title>Дякуємо за оплату!</title>
-        <meta http-equiv="refresh" content="2;url={INVITE_URL}">
-        <style>
-            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
-            a {{ color: #4cc9f0; font-size: 18px; }}
-        </style>
-    </head>
-    <body>
-        <h2>✅ Оплата пройшла успішно!</h2>
-        <p>Через 2 секунди вас буде автоматично перенаправлено у Telegram-канал.</p>
-        <p>Якщо цього не сталося, натисніть <a href="{INVITE_URL}">сюди</a>.</p>
-    </body>
-    </html>
-    """)
-
-# запасная точка возврата WayForPay (если где-то ещё используется returnUrl)
-@app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
-async def wfp_return():
-    return HTMLResponse(f"""
-    <html>
-    <head>
-        <title>Оплата успішна ✅</title>
-        <meta http-equiv="refresh" content="1;url={INVITE_URL}">
-        <style>
-            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
-            a {{ color: #4cc9f0; font-size: 18px; }}
-        </style>
-    </head>
-    <body>
-        <h2>✅ Оплата пройшла успішно</h2>
-        <p>Зачекайте або <a href="{INVITE_URL}">перейдіть у Telegram канал вручну</a>.</p>
-    </body>
-    </html>
-    """)
-
-@app.post("/telegram/webhook")
-async def telegram_webhook(request: Request):
-    data = await request.json()
-    update = Update.model_validate(data)
-    await dp.feed_update(bot, update)
-    return JSONResponse({"ok": True})
-
-@app.post("/payments/wayforpay/callback")
-async def wayforpay_callback(req: Request):
-    try:
-        data = await req.json()
-    except Exception:
-        data = {}
-    await process_callback(bot, data)
-    return {"ok": True}
-
-
-# ---------- lifecycle ----------
 @app.on_event("startup")
 async def on_startup():
     await init_db()
 
-    # ставим вебхук
+    # проверим, что BASE_URL задан правильно
     try:
-        base = normalize_base_url(settings.BASE_URL)
-        webhook_url = f"{base}/telegram/webhook"
-        await bot.set_webhook(webhook_url)
-        log.info("Telegram webhook set to %s", webhook_url)
-    except Exception as e:
-        log.exception("Failed to set webhook: %s", e)
+        urlparse(settings.BASE_URL)
+    except Exception:
+        log.warning("BASE_URL is invalid: %s", settings.BASE_URL)
 
-    # ежедневная проверка/очистка подписок
+    # планировщик: ежедневная проверка подписок
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(
-        enforce_expirations,
-        CronTrigger(hour=9, minute=0),
-        kwargs={"bot": bot},
-    )
+    scheduler.add_job(enforce_expirations, CronTrigger(hour=6, minute=0), kwargs={"bot": bot})
     scheduler.start()
     log.info("Scheduler started")
+
+
+@app.post("/webhook")
+async def telegram_webhook(update: dict):
+    upd = Update.model_validate(update)
+    await dp.feed_update(bot, upd)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/wfp/callback")
+async def wfp_callback(request: Request):
+    res = await process_callback(request, bot)
+    return JSONResponse(res)
+
+
+@app.get("/")
+async def index():
+    return HTMLResponse("<h3>Bot is running</h3>")
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
