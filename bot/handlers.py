@@ -25,9 +25,7 @@ async def on_chat_join_request(event: ChatJoinRequest, bot: Bot):
     now = datetime.now(timezone.utc)
     sub = await get_subscription_status(user_id)
 
-    is_paid_now = bool(
-        sub and sub.status == "active" and sub.paid_until and now <= sub.paid_until
-    )
+    is_paid_now = bool(sub and sub.status == "active" and sub.paid_until and now <= sub.paid_until)
 
     if is_paid_now:
         try:
