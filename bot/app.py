@@ -62,7 +62,7 @@ async def thanks_page():
     <html>
     <head>
         <title>Дякуємо за оплату!</title>
-        <meta http-equiv="refresh" content="2;url=https://t.me/+your_channel_invite">
+        <meta http-equiv="refresh" content="2;url=https://t.me/+kgfXNg9m0Sw5N2Uy">
         <style>
             body { background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }
             a { color: #4cc9f0; font-size: 18px; }
