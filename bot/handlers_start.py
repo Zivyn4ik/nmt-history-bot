@@ -1,6 +1,7 @@
 # bot/handlers_start.py
 from __future__ import annotations
 
+import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.types import (
@@ -10,7 +11,11 @@ from aiogram.types import (
     InlineKeyboardButton,
 )
 
+from .config import settings
+from .payments.wayforpay import create_invoice
+
 router = Router()
+log = logging.getLogger("handlers.start")
 
 
 def _start_keyboard() -> InlineKeyboardMarkup:
@@ -31,27 +36,35 @@ async def start_handler(message: Message):
         "• Таблиць для підготовки до НМТ\n"
         "• Тестів та завдань з поясненнями\n"
         "• Корисних матеріалів від викладачів\n\n"
-        "💳 Щоб отримати доступ — скористайтесь кнопками нижче."
+        "Щоб продовжити — виберіть дію нижче:"
     )
     await message.answer(text, reply_markup=_start_keyboard())
 
 
-# --- callbacks ---
-
 @router.callback_query(F.data == "buy")
 async def cb_buy(call: CallbackQuery, bot: Bot):
-    # вызывем уже готовый обработчик покупки
-    from .handlers_buy import cmd_buy  # локальный импорт, чтобы избежать цикличности
-    await call.answer()
-    # эмулируем /buy для текущего чата
-    await cmd_buy(call.message, bot)
+    await call.answer()  # ⚠️ Telegram требует ответ в течение 10 секунд
 
-
-@router.callback_query(F.data == "check")
-async def cb_check(call: CallbackQuery, bot: Bot):
-    # повторно показываем старт, т.к. в /start у тебя уже выводится статус
-    from .handlers import cmd_start  # локальный импорт
-    await call.answer()
-    await cmd_start(call.message, bot)
-
-
+    user_id = call.from_user.id
+    try:
+        url = await create_invoice(
+            user_id=user_id,
+            amount=settings.PRICE,
+            currency=settings.CURRENCY,
+            product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription (1 month)"),
+        )
+        await bot.send_message(
+            chat_id=call.message.chat.id,
+            text="🧾 Щоб оплатити підписку, натисніть кнопку нижче:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="💳 Оплатити", url=url)],
+                ]
+            ),
+        )
+    except Exception as e:
+        log.exception("Помилка при створенні інвойсу для користувача %s: %s", user_id, e)
+        await bot.send_message(
+            chat_id=call.message.chat.id,
+            text="⚠️ Сталася помилка при створенні рахунку. Спробуйте ще раз пізніше.",
+        )
