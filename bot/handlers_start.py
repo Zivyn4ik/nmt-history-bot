@@ -15,7 +15,6 @@ from .services import ensure_user, get_subscription_status
 
 router = Router()
 
-
 # --- keyboards ---------------------------------------------------------------
 
 def _main_menu_kb() -> InlineKeyboardMarkup:
@@ -25,12 +24,10 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📞 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
     ])
 
-
 def _buy_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
     ])
-
 
 # --- /start ------------------------------------------------------------------
 
@@ -46,20 +43,18 @@ async def start_handler(message: Message):
     )
     await message.answer(text, reply_markup=_main_menu_kb())
 
-
 # --- callbacks ---------------------------------------------------------------
 
 @router.callback_query(F.data == "buy")
 async def cb_buy(call: CallbackQuery, bot: Bot):
-    # запускаем уже существующий обработчик покупки
+    # запускаем существующий обработчик покупки
     from .handlers_buy import cmd_buy
     await call.answer()
     await cmd_buy(call.message, bot)
 
-
 @router.callback_query(F.data == "check")
 async def cb_check(call: CallbackQuery):
-    """Проверка статуса без импорта из bot.handlers (чтобы не ловить ImportError)."""
+    """Проверка статуса напрямую, без импорта из bot.handlers (чтобы не ловить ImportError)."""
     await call.answer()
 
     user = call.from_user
