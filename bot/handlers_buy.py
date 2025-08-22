@@ -6,6 +6,7 @@ from aiogram import Router, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
+# ВАЖНО: используем ваш рабочий модуль WayForPay из архива!
 from .payments.wayforpay import create_invoice
 from .config import settings
 
@@ -15,7 +16,8 @@ log = logging.getLogger("handlers.buy")
 
 async def send_buy_button(message: Message, bot: Bot):
     """
-    Отправить красивую кнопку оплаты (inline URL), без текста /buy.
+    Красиво показываем кнопку оплаты вместо текста /buy.
+    НИКАКИХ изменений в вашей логике подписей/запросов к WFP.
     """
     user_id = message.from_user.id
     try:
@@ -23,7 +25,7 @@ async def send_buy_button(message: Message, bot: Bot):
             user_id=user_id,
             amount=settings.PRICE,
             currency=settings.CURRENCY,
-            product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription (1 month)"),
+            product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription"),
         )
     except Exception as e:
         log.exception("Failed to create invoice for user %s: %s", user_id, e)
@@ -38,5 +40,5 @@ async def send_buy_button(message: Message, bot: Bot):
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message, bot: Bot):
-    # /buy теперь просто вызывает ту же кнопку
+    # Команда /buy теперь просто выводит красивую кнопку
     await send_buy_button(message, bot)
