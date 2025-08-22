@@ -21,46 +21,20 @@ class SubStatus:
     paid_until: date | None
 
 
-# ---------- helpers ----------
-def _user_columns() -> set[str]:
-    # названия доступных колонок модели User
-    return set(User.__table__.columns.keys())
-
-
-def _set_if_column(obj, colset: set[str], name: str, value):
-    if name in colset:
-        setattr(obj, name, value)
-
-
-# ----------------- USERS -----------------
+# -------- USERS --------
 async def ensure_user(tg_user) -> None:
     """
-    Создаёт пользователя или мягко обновляет профиль.
-    Пишем ТОЛЬКО существующие в модели поля.
+    Безопасно создаём пользователя только с id (как в вашем архиве).
+    Никаких лишних колонок не трогаем.
     """
-    cols = _user_columns()
     async with Session() as s:
         dbu = await s.get(User, tg_user.id)
         if dbu is None:
-            dbu = User(id=tg_user.id)  # только id обязателен
-            _set_if_column(dbu, cols, "username", tg_user.username or "")
-            _set_if_column(dbu, cols, "first_name", getattr(tg_user, "first_name", "") or "")
-            _set_if_column(dbu, cols, "last_name", getattr(tg_user, "last_name", "") or "")
-            _set_if_column(dbu, cols, "updated_at", now())
-            s.add(dbu)
-            await s.commit()
-        else:
-            # мягкое обновление профиля, только существующие поля
-            _set_if_column(dbu, cols, "username", tg_user.username or getattr(dbu, "username", ""))
-            if "first_name" in cols:
-                _set_if_column(dbu, cols, "first_name", getattr(tg_user, "first_name", "") or getattr(dbu, "first_name", ""))
-            if "last_name" in cols:
-                _set_if_column(dbu, cols, "last_name", getattr(tg_user, "last_name", "") or getattr(dbu, "last_name", ""))
-            _set_if_column(dbu, cols, "updated_at", now())
+            s.add(User(id=tg_user.id))
             await s.commit()
 
 
-# ----------------- SUBSCRIPTIONS -----------------
+# -------- SUBSCRIPTIONS --------
 async def get_subscription_status(user_id: int) -> SubStatus:
     async with Session() as s:
         res = await s.execute(select(Subscription).where(Subscription.user_id == user_id))
@@ -92,7 +66,8 @@ async def update_subscription(user_id: int, **fields) -> None:
 
 async def activate_or_extend(bot: Bot, user_id: int, months: int = 1) -> None:
     """
-    Активирует/продлевает подписку только после подтверждённой оплаты.
+    Активируем/продлеваем ПРИШЕДШУЮ оплату (вызывается из callback WFP).
+    Только тут отсылаем «Підписка активна до…».
     """
     async with Session() as s:
         res = await s.execute(select(Subscription).where(Subscription.user_id == user_id))
@@ -121,7 +96,7 @@ async def activate_or_extend(bot: Bot, user_id: int, months: int = 1) -> None:
 
         await s.commit()
 
-    # Сообщение пользователю + попытка авто-апрува join-request
+    # Сообщение пользователю и попытка авто-апрува join-request
     try:
         await bot.send_message(
             user_id,
@@ -141,7 +116,7 @@ async def activate_or_extend(bot: Bot, user_id: int, months: int = 1) -> None:
 
 async def enforce_expirations(bot: Bot) -> None:
     """
-    Ежедневно обновляем статусы; ничего лишнего пользователю не пишем.
+    Плановая проверка окончаний — без лишних сообщений пользователю.
     """
     moment = now()
     today = moment.date()
@@ -152,16 +127,4 @@ async def enforce_expirations(bot: Bot) -> None:
 
     for sub in subs:
         if sub.status == "active" and sub.paid_until and sub.paid_until < today:
-            await update_subscription(sub.user_id, status="expired", updated_at=moment)
-
-        if (
-            sub.status == "active"
-            and sub.paid_until
-            and moment > (datetime.combine(sub.paid_until, datetime.min.time(), tzinfo=UTC) + timedelta(days=3))
-        ):
-            try:
-                await bot.ban_chat_member(settings.CHANNEL_ID, sub.user_id)
-                await bot.unban_chat_member(settings.CHANNEL_ID, sub.user_id)
-            except Exception:
-                pass
             await update_subscription(sub.user_id, status="expired", updated_at=moment)
