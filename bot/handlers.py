@@ -1,59 +1,70 @@
+# bot/handlers.py
 from __future__ import annotations
 
-from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart
-from aiogram.types import (
-    Message,
-    ChatJoinRequest,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from datetime import datetime, timezone
+
+from aiogram import Router, Bot
+from aiogram.types import ChatJoinRequest, InlineKeyboardMarkup, InlineKeyboardButton
 
 from .config import settings
-from .services import ensure_user, get_subscription_status, has_active_access
+from .services import get_subscription_status
 
 router = Router()
 
 def _buy_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Оплатити підписку", callback_data="buy_open")],
+        ]
     )
 
-@router.message(CommandStart())
-async def cmd_start(message: Message, bot: Bot):
-    """Показываем статус подписки. Если нет доступа — красивая кнопка вместо /buy."""
-    await ensure_user(message.from_user)
+@router.chat_join_request()
+async def on_chat_join_request(event: ChatJoinRequest, bot: Bot):
+    """
+    Приймаємо join-request лише від користувачів із дійсною (оплаченою на зараз) підпискою.
+    Усі інші — відхиляємо та надсилаємо інструкцію на оплату в особисті повідомлення.
+    """
+    # 1) Ігноруємо заявки не в наш канал
+    if event.chat.id != settings.CHANNEL_ID:
+        return
 
-    sub = await get_subscription_status(message.from_user.id)
+    user_id = event.from_user.id
+    now = datetime.now(timezone.utc)
 
-    if getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None):
-        invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
-        text = f"✅ Підписка активна до <b>{sub.paid_until.date()}</b>."
-        if invite:
-            text += f"\nЯкщо ви ще не в каналі — перейдіть за посиланням:\n{invite}"
-        await message.answer(text)
-    else:
-        await message.answer(
-            "❌ Підписки немає або вона завершилась.\n\n"
-            "Щоб отримати доступ — натисніть кнопку нижче 👇",
+    # 2) Перевірка статусу підписки
+    sub = await get_subscription_status(user_id)
+
+    is_paid_now = (
+        sub is not None
+        and getattr(sub, "status", None) == "active"
+        and getattr(sub, "paid_until", None) is not None
+        and now <= sub.paid_until  # доступ дійсний на момент заявки
+    )
+
+    if is_paid_now:
+        # 3) Дозволяємо вступ
+        try:
+            await bot.approve_chat_join_request(chat_id=settings.CHANNEL_ID, user_id=user_id)
+        except Exception:
+            # Мовчазно ігноруємо телеграм-помилки схвалення
+            pass
+        return
+
+    # 4) Відхиляємо заявку і надсилаємо інструкцію на оплату
+    try:
+        await bot.decline_chat_join_request(chat_id=settings.CHANNEL_ID, user_id=user_id)
+    except Exception:
+        pass
+
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "❌ Доступ до каналу надається лише за активною підпискою.\n\n"
+                "Оформіть підписку на 1 місяць — і одразу подавайте заявку ще раз:"
+            ),
             reply_markup=_buy_kb(),
         )
-
-@router.chat_join_request(F.chat.id == settings.CHANNEL_ID)
-async def on_join_request(event: ChatJoinRequest, bot: Bot):
-    """Если у пользователя есть доступ — апрувим. Иначе даём кнопку покупки."""
-    uid = event.from_user.id
-    if await has_active_access(uid):
-        try:
-            await bot.approve_chat_join_request(chat_id=settings.CHANNEL_ID, user_id=uid)
-        except Exception:
-            pass
-    else:
-        try:
-            await bot.send_message(
-                uid,
-                "Щоб увійти до каналу — оформіть підписку:",
-                reply_markup=_buy_kb(),
-            )
-        except Exception:
-            pass
+    except Exception:
+        # Якщо користувач не відкривав діалог із ботом — Telegram може не дозволити написати першим.
+        pass
