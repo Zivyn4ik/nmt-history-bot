@@ -14,17 +14,20 @@ from apscheduler.triggers.cron import CronTrigger
 from .config import settings
 from .db import init_db
 from .services import enforce_expirations
+
 from .handlers_start import router as start_router
 from .handlers import router as handlers_router
 from .handlers_wipe import router as wipe_router
 from .handlers_buy import router as buy_router
+from .handlers_fallback import router as fallback_router  # <— наш «страховочный»
+
 from .payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
 
 app = FastAPI()
 
-# ВАЖНО: используем именно BOT_TOKEN (как в config.py)
+# ВАЖНО: именно BOT_TOKEN (как в config.py)
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -33,24 +36,28 @@ dp.include_router(start_router)
 dp.include_router(handlers_router)
 dp.include_router(wipe_router)
 dp.include_router(buy_router)
+dp.include_router(fallback_router)  # <— добавляем ПОСЛЕДНИМ
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return "<b>NMT History Bot is live</b>"
 
-# Вебхук от Telegram
+# Вебхук Telegram — страхуемся от исключений, чтобы процесс не падал
 @app.post("/telegram/webhook")
 async def telegram_webhook(update: dict):
     upd = Update.model_validate(update)
-    await dp.feed_update(bot, upd)
+    try:
+        await dp.feed_update(bot, upd)
+    except Exception as e:
+        logging.getLogger("app").exception("feed_update failed: %s", e)
     return {"ok": True}
 
-# Коллбек WayForPay — ОБЯЗАТЕЛЬНО передаём bot внутрь
+# Коллбек WayForPay — обязательно передаём bot
 @app.post("/payments/wayforpay/callback")
 async def wfp_callback(request: Request):
     return await process_callback(request, bot)
 
-# Планировщик для ежедневных операций
+# Планировщик
 scheduler: AsyncIOScheduler | None = None
 
 @app.on_event("startup")
