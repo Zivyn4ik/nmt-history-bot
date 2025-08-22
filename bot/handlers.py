@@ -1,70 +1,74 @@
-# bot/handlers.py
+# handlers_start.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
-
-from aiogram import Router, Bot
-from aiogram.types import ChatJoinRequest, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Router, F, Bot
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from .config import settings
-from .services import get_subscription_status
+from .services import get_subscription_status, is_member_of_channel
 
 router = Router()
 
-def _buy_kb() -> InlineKeyboardMarkup:
+def buy_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Оплатити підписку", callback_data="buy_open")],
+            [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy_open")],
         ]
     )
 
-@router.chat_join_request()
-async def on_chat_join_request(event: ChatJoinRequest, bot: Bot):
-    """
-    Приймаємо join-request лише від користувачів із дійсною (оплаченою на зараз) підпискою.
-    Усі інші — відхиляємо та надсилаємо інструкцію на оплату в особисті повідомлення.
-    """
-    # 1) Ігноруємо заявки не в наш канал
-    if event.chat.id != settings.CHANNEL_ID:
-        return
-
-    user_id = event.from_user.id
+@router.callback_query(F.data == "check_status")
+async def on_check_status(cb: CallbackQuery, bot: Bot):
+    """Перевірка статусу підписки з урахуванням TZ і фолбеком на реальне членство в каналі."""
+    user_id = cb.from_user.id
     now = datetime.now(timezone.utc)
 
-    # 2) Перевірка статусу підписки
     sub = await get_subscription_status(user_id)
 
-    is_paid_now = (
+    def _tz_aware(dt):
+        if dt is None:
+            return None
+        # Робимо paid_until timezone-aware (UTC), якщо воно naive
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    paid_until = _tz_aware(getattr(sub, "paid_until", None))
+    status = getattr(sub, "status", None)
+
+    active_by_db = bool(
         sub is not None
-        and getattr(sub, "status", None) == "active"
-        and getattr(sub, "paid_until", None) is not None
-        and now <= sub.paid_until  # доступ дійсний на момент заявки
+        and status == "active"
+        and paid_until is not None
+        and now <= paid_until
     )
 
-    if is_paid_now:
-        # 3) Дозволяємо вступ
-        try:
-            await bot.approve_chat_join_request(chat_id=settings.CHANNEL_ID, user_id=user_id)
-        except Exception:
-            # Мовчазно ігноруємо телеграм-помилки схвалення
-            pass
+    # Фолбек: якщо за БД неактивний, але фактично у каналі — покажемо, що доступ є,
+    # і запропонуємо синхронізувати/поновити підписку.
+    in_channel = await is_member_of_channel(bot, settings.CHANNEL_ID, user_id)
+
+    if active_by_db:
+        text = "✅ Підписка активна.\nДоступ до каналу надано до: <b>{}</b>".format(
+            paid_until.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        )
+        await cb.message.answer(text, parse_mode="HTML")
+        await cb.answer()
         return
 
-    # 4) Відхиляємо заявку і надсилаємо інструкцію на оплату
-    try:
-        await bot.decline_chat_join_request(chat_id=settings.CHANNEL_ID, user_id=user_id)
-    except Exception:
-        pass
-
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=(
-                "❌ Доступ до каналу надається лише за активною підпискою.\n\n"
-                "Оформіть підписку на 1 місяць — і одразу подавайте заявку ще раз:"
-            ),
-            reply_markup=_buy_kb(),
+    if in_channel:
+        # Користувач у каналі, але БД каже «неактивно» → ймовірно проблема з TZ/синхронізацією
+        text = (
+            "ℹ️ Ви зараз маєте доступ до каналу (за фактом членства), "
+            "але в обліковому записі підписка виглядає неактивною.\n\n"
+            "Якщо ви нещодавно оплатили — зачекайте кілька хвилин, або натисніть «Оформити підписку», "
+            "щоб повторно синхронізувати платіж."
         )
-    except Exception:
-        # Якщо користувач не відкривав діалог із ботом — Telegram може не дозволити написати першим.
-        pass
+        await cb.message.answer(text, reply_markup=buy_kb())
+        await cb.answer()
+        return
+
+    # Немає активної підписки і немає членства
+    await cb.message.answer(
+        "❌ Підписки немає або вона завершилась.\n\n"
+        "Щоб отримати доступ — натисніть кнопку нижче 👇",
+        reply_markup=buy_kb(),
+    )
+    await cb.answer()
