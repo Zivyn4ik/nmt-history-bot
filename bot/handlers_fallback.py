@@ -10,14 +10,12 @@ router = Router()
 
 @router.callback_query()
 async def fallback_answer(cb: CallbackQuery):
-    # 1) мгновенно снимаем «часики»
+    # мгновенно снимаем «часики» на ЛЮБОЙ кнопке
     try:
         await cb.answer(cache_time=1, show_alert=False)
     except Exception:
         pass
-
-    # 2) Лёгкий лог — пригодится, если основной хендлер не отработал
     try:
-        log.info("fallback answered: data=%r from_user=%s", cb.data, cb.from_user.id)
+        log.info("fallback answered: data=%r from=%s", cb.data, cb.from_user.id)
     except Exception:
         pass
