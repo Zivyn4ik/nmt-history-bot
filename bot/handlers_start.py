@@ -7,15 +7,16 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from .config import settings
-from .services import get_subscription_status, is_member_of_channel, ensure_user
+from .services import ensure_user, get_subscription_status, is_member_of_channel
 
 log = logging.getLogger("handlers_start")
 router = Router()
 
 def main_kb() -> InlineKeyboardMarkup:
+    # делаем новую кнопку с data="check", но хендлер примет и "check_status"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy_open")],
-        [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check_status")],
+        [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
     ])
 
 @router.message(F.text == "/start")
@@ -28,14 +29,15 @@ def buy_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy_open")]
     ])
 
-@router.callback_query(F.data == "check_status")
+# КЛЮЧЕВОЕ: принимаем и 'check', и 'check_status'
+@router.callback_query(F.data.in_({"check", "check_status"}))
 async def on_check_status(cb: CallbackQuery, bot: Bot):
     user_id = cb.from_user.id
-    log.info("check_status click from %s", user_id)
+    log.info("check_status click from %s (data=%r)", user_id, cb.data)
 
-    # Мгновенно снимаем «часики»
+    # мгновенно сняли «часики»
     try:
-        await cb.answer("Перевіряю…", cache_time=1, show_alert=False)
+        await cb.answer("Перевіряю…", cache_time=1)
     except Exception:
         pass
 
@@ -47,7 +49,6 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
             return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if dt else "—"
 
         active = bool(sub and sub.status == "active" and sub.paid_until and now <= sub.paid_until)
-
         if active:
             await cb.message.answer(
                 f"✅ Підписка активна.\nДоступ до: <b>{_fmt(sub.paid_until)}</b>",
@@ -55,12 +56,11 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
             )
             return
 
-        # Фолбек: фактичне членство
-        in_channel = await is_member_of_channel(bot, settings.CHANNEL_ID, user_id)
-        if in_channel:
+        # Фолбек: фактично в каналі?
+        if await is_member_of_channel(bot, settings.CHANNEL_ID, user_id):
             await cb.message.answer(
-                "ℹ️ Ви маєте доступ до каналу (за фактом членства), але в обліковому записі підписка неактивна. "
-                "Якщо ви щойно оплатили — зачекайте кілька хвилин або натисніть «Оформити підписку».",
+                "ℹ️ Ви вже у каналі, але в обліковому записі підписка неактивна. "
+                "Якщо платили щойно — зачекайте кілька хвилин або натисніть «Оформити підписку».",
                 reply_markup=buy_kb(),
             )
             return
@@ -73,6 +73,6 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
     except Exception as e:
         log.exception("check_status failed for %s: %s", user_id, e)
         try:
-            await cb.message.answer("⚠️ Сталася помилка під час перевірки. Спробуйте ще раз трохи пізніше.")
+            await cb.message.answer("⚠️ Сталася помилка під час перевірки. Спробуйте ще раз пізніше.")
         except Exception:
             pass
