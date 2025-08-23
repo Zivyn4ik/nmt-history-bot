@@ -21,7 +21,7 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
         [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
-        [InlineKeyboardButton(text="📞 Підтримка @zivyn4ik", url="https://t.me/zivyn4ik")],
+        [InlineKeyboardButton(text="📞 Підтримка", url="https://t.me/zivyn4ik")],
     ])
 
 def _buy_kb() -> InlineKeyboardMarkup:
@@ -74,3 +74,4 @@ async def cb_check(call: CallbackQuery):
             "Щоб отримати доступ — натисніть кнопку нижче 👇",
             reply_markup=_buy_kb(),
         )
+
