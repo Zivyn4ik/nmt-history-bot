@@ -1,4 +1,3 @@
-# bot/handlers_start.py
 from __future__ import annotations
 
 import logging
@@ -13,7 +12,7 @@ log = logging.getLogger("handlers_start")
 router = Router()
 
 def main_kb() -> InlineKeyboardMarkup:
-    # делаем новую кнопку с data="check", но хендлер примет и "check_status"
+    # Новые кнопки: data="check" и "buy_open"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy_open")],
         [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check")],
@@ -29,13 +28,13 @@ def buy_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy_open")]
     ])
 
-# КЛЮЧЕВОЕ: принимаем и 'check', и 'check_status'
-@router.callback_query(F.data.in_({"check", "check_status"}))
+# Ловим И check, И check_status, И любые варианты, начинающиеся с "check"
+@router.callback_query(F.data.func(lambda d: isinstance(d, str) and (d in {"check", "check_status"} or d.startswith("check"))))
 async def on_check_status(cb: CallbackQuery, bot: Bot):
     user_id = cb.from_user.id
     log.info("check_status click from %s (data=%r)", user_id, cb.data)
 
-    # мгновенно сняли «часики»
+    # мгновенно снимаем «часики»
     try:
         await cb.answer("Перевіряю…", cache_time=1)
     except Exception:
@@ -59,7 +58,7 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
         # Фолбек: фактично в каналі?
         if await is_member_of_channel(bot, settings.CHANNEL_ID, user_id):
             await cb.message.answer(
-                "ℹ️ Ви вже у каналі, але в обліковому записі підписка неактивна. "
+                "ℹ️ Ви у каналі (за фактом членства), але в обліковому записі підписка неактивна. "
                 "Якщо платили щойно — зачекайте кілька хвилин або натисніть «Оформити підписку».",
                 reply_markup=buy_kb(),
             )
