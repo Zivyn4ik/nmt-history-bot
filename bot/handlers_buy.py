@@ -28,18 +28,17 @@ async def cmd_buy(message: Message, bot: Bot):
         currency=settings.CURRENCY,
         product_name=settings.PRODUCT_NAME,
     )
-    await message.answer(
-        "Рахунок на 1 місяць сформовано. Натисніть «Оплатити».",
-        reply_markup=_pay_kb(url)
-    )
+    await message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
 
-@router.callback_query(F.data == "buy_open")
+# КЛЮЧЕВОЕ: принимаем и старые, и новые callback_data
+@router.callback_query(F.data.in_({"buy_open", "buy", "open_buy"}))
 async def on_buy_open(cb: CallbackQuery, bot: Bot):
     user_id = cb.from_user.id
-    log.info("buy_open click from %s", user_id)
-    # Мгновенно убираем «часики»
+    log.info("buy_open click from %s (data=%r)", user_id, cb.data)
+
+    # мгновенно сняли «часики»
     try:
-        await cb.answer(cache_time=1, show_alert=False)
+        await cb.answer(cache_time=1)
     except Exception:
         pass
 
@@ -52,13 +51,10 @@ async def on_buy_open(cb: CallbackQuery, bot: Bot):
             currency=settings.CURRENCY,
             product_name=settings.PRODUCT_NAME,
         )
-        await cb.message.answer(
-            "Рахунок на 1 місяць сформовано. Натисніть «Оплатити».",
-            reply_markup=_pay_kb(url)
-        )
+        await cb.message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
     except Exception as e:
         log.exception("buy_open failed for %s: %s", user_id, e)
         try:
-            await cb.message.answer("⚠️ Не вдалося сформувати рахунок. Спробуйте ще раз пізніше.")
+            await cb.message.answer("⚠️ Не вдалося сформувати рахунок. Спробуйте пізніше.")
         except Exception:
             pass
