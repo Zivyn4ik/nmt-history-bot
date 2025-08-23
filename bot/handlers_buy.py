@@ -1,4 +1,3 @@
-# bot/handlers_buy.py
 from __future__ import annotations
 
 import logging
@@ -30,13 +29,12 @@ async def cmd_buy(message: Message, bot: Bot):
     )
     await message.answer("Рахунок на 1 місяць сформовано. Натисніть «Оплатити».", reply_markup=_pay_kb(url))
 
-# КЛЮЧЕВОЕ: принимаем и старые, и новые callback_data
-@router.callback_query(F.data.in_({"buy_open", "buy", "open_buy"}))
+# Ловим buy_open / buy / open_buy и любые варианты, начинающиеся с "buy"
+@router.callback_query(F.data.func(lambda d: isinstance(d, str) and (d in {"buy_open", "buy", "open_buy"} or d.startswith("buy"))))
 async def on_buy_open(cb: CallbackQuery, bot: Bot):
     user_id = cb.from_user.id
     log.info("buy_open click from %s (data=%r)", user_id, cb.data)
 
-    # мгновенно сняли «часики»
     try:
         await cb.answer(cache_time=1)
     except Exception:
