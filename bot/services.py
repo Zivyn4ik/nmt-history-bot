@@ -123,7 +123,10 @@ async def create_join_request_link(bot: Bot, user_id: int) -> str:
 
 
 async def activate_or_extend(bot: Bot, user_id: int) -> None:
-    """Активирует или продлевает подписку на 30 дней и выдаёт ссылку с join-request."""
+    """
+    Активирует или продлевает подписку на 30 дней.
+    Обновляет статус в БД и отправляет пользователю сообщение с join-request ссылкой.
+    """
     async with Session() as s:
         sub = await s.get(Subscription, user_id)
         if not sub:
@@ -144,26 +147,24 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
         sub.updated_at = current
         await s.commit()
 
-    # Если пользователь уже подал заявку — одобряем её
+    # Одобряем заявку, если пользователь уже подал join-request
     try:
         await bot.approve_chat_join_request(settings.CHANNEL_ID, user_id)
     except Exception:
-        # Если ещё нет заявки — просто отправим ссылку, чтобы он подал её корректно
         pass
 
-    # Выдаём ТОЛЬКО join-request ссылку (никаких мгновенных инвайтов)
+    # Отправляем сообщение с join-request ссылкой
     try:
         invite = await create_join_request_link(bot, user_id)
         await bot.send_message(
             user_id,
-            (
-                f"Підписка активна до <b>{new_until.date()}</b>.\n"
-                f"Натисніть, щоб подати заявку на вступ:\n{invite}"
-            ),
+            f"✅ Ваша підписка активна до <b>{new_until.date()}</b>.\n"
+            f"Натисніть, щоб подати заявку на вступ до каналу:\n{invite}",
             parse_mode="HTML",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Cannot send subscription message to user {user_id}: {e}")
+
 
 
 async def enforce_expirations(bot: Bot) -> None:
