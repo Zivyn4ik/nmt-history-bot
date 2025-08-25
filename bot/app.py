@@ -1,6 +1,7 @@
-from __future__ import annotations
+from future import annotations
 
 import logging
+import os
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
@@ -11,6 +12,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import Update
+from aiogram.exceptions import TelegramRetryAfter
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -23,7 +25,6 @@ from bot.handlers_wipe import router as wipe_router
 from bot.handlers_buy import router as buy_router
 from bot.services import enforce_expirations
 from bot.payments.wayforpay import process_callback
-
 
 log = logging.getLogger("app")
 
@@ -43,25 +44,25 @@ dp.include_router(handlers_router)
 dp.include_router(wipe_router)
 dp.include_router(buy_router)
 
+
 # ---------------- FastAPI ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- startup ---
     await init_db()
 
+    # Безопасная установка webhook
     try:
         base = normalize_base_url(settings.BASE_URL)
         webhook_url = f"{base}/telegram/webhook"
 
-        webhook_info = await bot.get_webhook_info()
-
-        if webhook_info.url != webhook_url:
-            await bot.delete_webhook(drop_pending_updates=True)
-            await bot.set_webhook(webhook_url)
-            log.info("Telegram webhook set to %s", webhook_url)
-        else:
-            log.info("Webhook уже установлен: %s", webhook_url)
-
+        info = await bot.get_webhook_info()
+        if info.url != webhook_url:
+            try:
+                await bot.set_webhook(webhook_url)
+                log.info("Telegram webhook set to %s", webhook_url)
+            except TelegramRetryAfter as e:
+                log.warning("Flood control exceeded, retry after %s sec", e.retry_after)
     except Exception as e:
         log.exception("Failed to set webhook: %s", e)
 
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI):
 
     # --- shutdown ---
     await bot.session.close()
+
 
 app = FastAPI(title="TG Subscription Bot", lifespan=lifespan)
 
@@ -94,9 +96,11 @@ def normalize_base_url(u: str) -> str:
 async def root():
     return {"ok": True}
 
+
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
+
 
 @app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
 async def thanks_page():
@@ -118,6 +122,7 @@ async def thanks_page():
     </html>
     """)
 
+
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return():
     return HTMLResponse(f"""
@@ -126,7 +131,7 @@ async def wfp_return():
         <title>Оплата успішна ✅</title>
         <meta http-equiv="refresh" content="1;url={INVITE_URL}">
         <style>
-            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
+body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
             a {{ color: #4cc9f0; font-size: 18px; }}
         </style>
     </head>
@@ -137,12 +142,14 @@ async def wfp_return():
     </html>
     """)
 
+
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
     update = Update.model_validate(data)
     await dp.feed_update(bot, update)
     return JSONResponse({"ok": True})
+
 
 @app.post("/payments/wayforpay/callback")
 async def wayforpay_callback(req: Request):
@@ -153,3 +160,10 @@ async def wayforpay_callback(req: Request):
     await process_callback(bot, data)
     return {"ok": True}
 
+
+# ----------------- запуск uvicorn -----------------
+if name == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
