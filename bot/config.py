@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     PRODUCT_NAME: str = Field(default="Channel subscription (1 month)")
     LANG: str = Field(default="ua")
     DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./bot.sqlite3")
+    PAYMENT_URL: str = Field(default="https://secure.wayforpay.com/payment/sd11e605b4ab0")
 
     # ⬇️ НОВОЕ: join-request ссылка Telegram-канала
     TG_JOIN_REQUEST_URL: str = Field(...)
@@ -21,3 +22,4 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+
