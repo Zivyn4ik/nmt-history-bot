@@ -1,7 +1,9 @@
+
 from __future__ import annotations
 
 import logging
 import os
+import asyncio
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
@@ -60,17 +62,22 @@ async def lifespan(app: FastAPI):
         if info.url != webhook_url:
             try:
                 await bot.set_webhook(webhook_url)
-                log.info("Telegram webhook set to %s", webhook_url)
+                log.info("Telegram webhook установлен: %s", webhook_url)
             except TelegramRetryAfter as e:
-                log.warning("Flood control exceeded, retry after %s sec", e.retry_after)
+                log.warning("Flood control, retry через %s секунд", e.retry_after)
+                await asyncio.sleep(e.retry_after)
+                await bot.set_webhook(webhook_url)
+        else:
+            log.info("Webhook уже установлен, ничего не делаем")
     except Exception as e:
-        log.exception("Failed to set webhook: %s", e)
+        log.exception("Ошибка при установке webhook: %s", e)
 
+    # Scheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), kwargs={"bot": bot})
     scheduler.add_job(enforce_expirations, CronTrigger(hour="*/6"), kwargs={"bot": bot})
     scheduler.start()
-    log.info("Scheduler started: подписки будут проверяться ежедневно и каждые 6 часов")
+    log.info("Scheduler запущен: подписки проверяются ежедневно и каждые 6 часов")
 
     # --- приложение работает ---
     yield
@@ -131,7 +138,7 @@ async def wfp_return():
         <title>Оплата успішна ✅</title>
         <meta http-equiv="refresh" content="1;url={INVITE_URL}">
         <style>
-body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
+            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
             a {{ color: #4cc9f0; font-size: 18px; }}
         </style>
     </head>
@@ -160,11 +167,4 @@ async def wayforpay_callback(req: Request):
     await process_callback(bot, data)
     return {"ok": True}
 
-
-# ----------------- запуск uvicorn -----------------
-if name == "__main__":
-    import uvicorn
-
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
-
+    
