@@ -8,7 +8,7 @@ from aiogram import Bot
 from aiogram.enums.chat_member_status import ChatMemberStatus
 from sqlalchemy import select, update
 
-from db import Session, User, Subscription
+from bot.db import Session, User, Subscription
 from bot.config import settings, Subscription
 
 import logging
@@ -261,4 +261,5 @@ async def enforce_expirations(bot: Bot) -> None:
     except Exception:
         # если бот не может получить список участников (ограничение API) — пропускаем
         pass
+
 
