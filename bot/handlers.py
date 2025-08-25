@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 
 from bot.config import settings
 from bot.services import get_subscription_status, is_member_of_channel
-from bot.payments import create_invoice
+
 
 router = Router()
 
@@ -83,6 +83,7 @@ async def on_buy_subscription(cb: CallbackQuery):
     await cb.message.answer(
         f"💳 Для оформлення підписки перейдіть за посиланням:\n{settings.PAYMENT_URL}"
     )
+
 
 
 
