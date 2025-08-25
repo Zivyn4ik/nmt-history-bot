@@ -1,9 +1,10 @@
-import asyncio
-from bot.config import settings
+import logging
 from bot.payments import create_invoice
+import asyncio
 
-async def test_wfp():
+log = logging.getLogger("bot.test")
+async def run():
     url = await create_invoice(user_id=12345, amount=199)
-    print("Invoice URL:", url)
+    log.info("Invoice URL: %s", url)
 
-asyncio.run(test_wfp())
+asyncio.run(run())
