@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 
 from bot.config import settings
 from bot.services import get_subscription_status, is_member_of_channel
+from bot.payments import create_invoice
 
 router = Router()
 
@@ -93,3 +94,4 @@ async def on_buy_subscription(cb: CallbackQuery, bot: Bot):
         await cb.message.answer(
             f"❌ Не вдалося створити рахунок. Спробуйте пізніше.\n\nДеталі помилки: {e}"
         )
+
