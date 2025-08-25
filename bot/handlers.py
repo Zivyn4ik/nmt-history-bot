@@ -74,26 +74,15 @@ async def on_check_status(cb: CallbackQuery, bot: Bot):
     await cb.answer()
 
 # --- обработчик кнопки "Оформити підписку" -----------------------------------
+from bot.config import settings
 
 @router.callback_query(F.data == "buy")
-async def on_buy_subscription(cb: CallbackQuery, bot: Bot):
-    """Обработка кнопки покупки/подписки через WayForPay."""
-    # Закрываем крутилку сразу
-    await cb.answer("Генеруємо посилання на оплату...")
+async def on_buy_subscription(cb: CallbackQuery):
+    """Отправка готовой ссылки для оплаты."""
+    await cb.answer()  # закрываем крутилку сразу
+    await cb.message.answer(
+        f"💳 Для оформлення підписки перейдіть за посиланням:\n{settings.PAYMENT_URL}"
+    )
 
-    try:
-        url = await create_invoice(user_id=cb.from_user.id, amount=settings.PRICE)
-        await cb.message.answer(
-            f"💳 Для оформлення підписки перейдіть за посиланням:\n{url}"
-        )
-    except Exception as e:
-        # Логируем ошибку в серверный лог
-        import logging
-        log = logging.getLogger("bot.payments")
-        log.exception("Помилка при створенні рахунку WayForPay")
-        # Сообщаем пользователю
-        await cb.message.answer(
-            "❌ Не вдалося створити рахунок. Спробуйте пізніше."
-        )
 
 
