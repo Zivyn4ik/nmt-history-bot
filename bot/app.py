@@ -115,16 +115,16 @@ async def thanks_page():
     <html>
     <head>
         <title>Дякуємо за оплату!</title>
-        <meta http-equiv="refresh" content="2;url={INVITE_URL}">
+        <p>✅ Оплата пройшла успішно!</p>
         <style>
             body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
             a {{ color: #4cc9f0; font-size: 18px; }}
         </style>
     </head>
     <body>
-        <h2>✅ Оплата пройшла успішно!</h2>
+        <p>Бот щойно надіслав вам особисте посилання в Telegram 📩</p>
         <p>Через 2 секунди вас буде автоматично перенаправлено у Telegram-канал.</p>
-        <p>Якщо цього не сталося, натисніть <a href="{INVITE_URL}">сюди</a>.</p>
+        <p>Відкрийте чат з ботом, щоб увійти до каналу.</p>
     </body>
     </html>
     """)
@@ -168,3 +168,4 @@ async def wayforpay_callback(req: Request):
     return {"ok": True}
 
     
+
