@@ -213,23 +213,24 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
         
 # --- Отправка персональной ссылки пользователю ---
 
-try:
-    invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
-    await bot.send_message(
-        chat_id=user_id,
-        text=(
-            f"✅ Оплата успішна!\n"
-            f"Перейдіть за вашим особистим посиланням у Telegram:\n"
-            f"{invite_url}"
-        )
-    )
-    log.info(f"📩 Personal invite sent to user {user_id}")
-except Exception as e:
-    log.warning(f"Не удалось отправить ссылку пользователю {user_id}: {e}")
+        try:
+            invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"✅ Оплата успішна!\n"
+                    f"Перейдіть за вашим особистим посиланням у Telegram:\n"
+                    f"{invite_url}"
+                )
+            )
+            log.info(f"📩 Personal invite sent to user {user_id}")
+        except Exception as e:
+            log.warning(f"Не удалось отправить ссылку пользователю {user_id}: {e}")
     
-log.info(f"✅ Subscription activated/extended for user {user_id}")
+        log.info(f"✅ Subscription activated/extended for user {user_id}")
 
-    except Exception:
-
+        except Exception:
+                                              
         log.exception("Unhandled error in WFP callback handler")
+
 
