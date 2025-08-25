@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import JSONResponse, HTMLResponse
 
 from aiogram import Bot, Dispatcher
@@ -130,23 +131,13 @@ async def thanks_page():
 
 
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
-async def wfp_return():
-    return HTMLResponse(f"""
-    <html>
-    <head>
-        <title>Оплата успішна ✅</title>
-        <style>
-            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
-            a {{ color: #4cc9f0; font-size: 18px; }}
-        </style>
-    </head>
-    <body>
-        <h2>✅ Оплата пройшла успішно</h2>
-        <p>Бот вже надіслав вам персональне посилання в Telegram 📩</p>
-        <p>Перейдіть у чат з ботом, щоб увійти до каналу.</p>
-    </body>
-    </html>
-    """)
+async def wfp_return(request: Request):
+    user_id = int(request.query_params.get("user_id", 0))
+    if not user_id:
+        return HTMLResponse("<h2>❌ Не передано user_id</h2>")
+
+    invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
+    return RedirectResponse(invite_url)
 
 
 @app.post("/telegram/webhook")
@@ -167,5 +158,6 @@ async def wayforpay_callback(req: Request):
     return {"ok": True}
 
     
+
 
 
