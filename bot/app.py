@@ -19,6 +19,7 @@ from aiogram.exceptions import TelegramRetryAfter
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
 
 from bot.config import settings
 from bot.db import init_db
@@ -129,12 +130,18 @@ async def thanks_page():
     </html>
     """)
 
-
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
-    user_id = int(request.query_params.get("user_id", 0))
-    if not user_id:
-        return HTMLResponse("<h2>❌ Не передано user_id</h2>")
+    order_ref = request.query_params.get("orderReference")
+    if not order_ref:
+        return HTMLResponse("<h2>❌ Не передано orderReference</h2>")
+
+    async with Session() as s:
+        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
+        pay = res.scalar_one_or_none()
+        if not pay:
+            return HTMLResponse("<h2>❌ Платеж не найден</h2>")
+        user_id = pay.user_id
 
     invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
     return RedirectResponse(invite_url)
@@ -158,6 +165,7 @@ async def wayforpay_callback(req: Request):
     return {"ok": True}
 
     
+
 
 
 
