@@ -1,4 +1,4 @@
-from future import annotations
+from __future__ import annotations
 
 import logging
 import os
@@ -167,3 +167,4 @@ if name == "__main__":
 
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run("app:app", host="0.0.0.0", port=port)
+
