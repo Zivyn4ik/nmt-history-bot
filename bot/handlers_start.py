@@ -10,7 +10,7 @@ from aiogram.types import (
 )
 
 from bot.config import settings
-from services import ensure_user, get_subscription_status
+from bot.services import ensure_user, get_subscription_status
 from bot.handlers import on_buy_subscription
 
 router = Router()
@@ -70,3 +70,4 @@ async def cb_check(call: CallbackQuery):
             "Щоб отримати доступ — натисніть кнопку нижче 👇",
             reply_markup=_buy_kb(),
         )
+
