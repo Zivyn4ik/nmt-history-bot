@@ -52,8 +52,16 @@ async def lifespan(app: FastAPI):
     try:
         base = normalize_base_url(settings.BASE_URL)
         webhook_url = f"{base}/telegram/webhook"
-        await bot.set_webhook(webhook_url)
-        log.info("Telegram webhook set to %s", webhook_url)
+
+        webhook_info = await bot.get_webhook_info()
+
+        if webhook_info.url != webhook_url:
+            await bot.delete_webhook(drop_pending_updates=True)
+            await bot.set_webhook(webhook_url)
+            log.info("Telegram webhook set to %s", webhook_url)
+        else:
+            log.info("Webhook уже установлен: %s", webhook_url)
+
     except Exception as e:
         log.exception("Failed to set webhook: %s", e)
 
@@ -144,3 +152,4 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
