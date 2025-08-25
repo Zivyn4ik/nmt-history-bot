@@ -212,8 +212,9 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
         await activate_or_extend(bot, user_id)
         
 # --- Отправка персональной ссылки пользователю ---
-invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
+
 try:
+    invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
     await bot.send_message(
         chat_id=user_id,
         text=(
@@ -231,3 +232,4 @@ log.info(f"✅ Subscription activated/extended for user {user_id}")
     except Exception:
 
         log.exception("Unhandled error in WFP callback handler")
+
