@@ -34,20 +34,25 @@ async def cmd_buy(message: Message, bot: Bot):
         await message.answer("Не вдалося підготувати оплату. Спробуйте ще раз.")
         return
 
-    # 2️⃣ Создаём инвойс WayForPay и Payment
+    # 2️⃣ Создаём инвойс WayForPay и создаём запись Payment
     try:
         url, order_ref = await create_invoice(
             user_id=user_id,
             amount=settings.PRICE,
             currency=settings.CURRENCY,
             product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription (1 month)"),
-            return_token=token,  # передаем token чтобы использовать после оплаты
+            start_token=token,  # передаём token, чтобы WFP редиректнул на /wfp/return?token=...
         )
 
-        # Сохраняем order_ref в таблицу Payment
+        # Сохраняем order_ref в таблицу Payment (status = created)
         async with Session() as session:
-            session.add(Payment(user_id=user_id, order_ref=order_ref, amount=settings.PRICE,
-                                currency=settings.CURRENCY, status="created"))
+            session.add(Payment(
+                user_id=user_id,
+                order_ref=order_ref,
+                amount=settings.PRICE,
+                currency=settings.CURRENCY,
+                status="created",
+            ))
             await session.commit()
     except Exception as e:
         log.exception("Failed to create invoice for user %s: %s", user_id, e)
