@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy import select
 
 from bot.config import settings
 from bot.services import ensure_user, get_subscription_status
 from bot.handlers import on_buy_subscription
+from bot.db import Session, PaymentToken
 
 router = Router()
 
@@ -33,6 +30,32 @@ def _buy_kb() -> InlineKeyboardMarkup:
 
 @router.message(CommandStart())
 async def start_handler(message: Message):
+    user = message.from_user
+    await ensure_user(user)
+
+    # проверяем, пришёл ли токен через start parameter
+    token = message.get_args()  # или message.start_param в новых версиях aiogram
+    if token:
+        async with Session() as s:
+            res = await s.execute(
+                select(PaymentToken).where(
+                    PaymentToken.token == token,
+                    PaymentToken.status == "pending"
+                )
+            )
+            token_obj = res.scalar_one_or_none()
+            if token_obj:
+                # отмечаем токен как использованный
+                token_obj.status = "used"
+                await s.commit()
+                # отправляем персональное приглашение
+                invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user.id}"
+                await message.answer(
+                    f"✅ Ваш персональний доступ готовий!\n\n"
+                    f"Посилання для вступу: {invite_url}"
+                )
+
+    # обычное приветствие и кнопки
     text = (
         "👋 <b>Вітаємо у навчальному боті HMT 2026 | Історія України!</b>\n\n"
         "📚 Тут ви отримаєте доступ до:\n"
@@ -70,4 +93,3 @@ async def cb_check(call: CallbackQuery):
             "Щоб отримати доступ — натисніть кнопку нижче 👇",
             reply_markup=_buy_kb(),
         )
-
