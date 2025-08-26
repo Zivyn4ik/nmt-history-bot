@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from bot.config import settings
 from bot.services import ensure_user, get_subscription_status
-from bot.handlers import on_buy_subscription
+from bot.handlers_buy import cmd_buy  # ✅ исправлено: берём функцию buy из handlers_buy.py
 from bot.db import Session, PaymentToken
 
 router = Router()
@@ -70,7 +70,11 @@ async def start_handler(message: Message):
 
 @router.callback_query(F.data == "buy")
 async def cb_buy(call: CallbackQuery, bot: Bot):
-    await on_buy_subscription(call)
+    """
+    Теперь вместо несуществующей функции on_buy_subscription
+    вызываем cmd_buy напрямую.
+    """
+    await cmd_buy(call.message, bot)  # передаем Message и Bot
 
 @router.callback_query(F.data == "check_status")
 async def cb_check(call: CallbackQuery):
