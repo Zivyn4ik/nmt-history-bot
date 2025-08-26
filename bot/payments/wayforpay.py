@@ -121,10 +121,10 @@ def verify_callback_signature(data: Dict[str, Any]) -> bool:
         order_ref = data.get("orderReference", "")
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
-        product_name = data.get("productName", [""])[0]  # если список
+        product_name = data.get("productName", [""])[0]
         order_date = int(data.get("orderDate", time.time()))
 
-        base=make_base(
+        base = make_base(
             merchant=settings.WFP_MERCHANT.strip(),
             domain=settings.WFP_DOMAIN.strip(),
             order_ref=order_ref,
@@ -133,7 +133,7 @@ def verify_callback_signature(data: Dict[str, Any]) -> bool:
             currency=currency,
             product_name=product_name,
             product_count=1,
-            product_price_str=amount
+            product_price_str=amount,
         )
         expected_sig = hmac_md5_hex(base, settings.WFP_SECRET.strip())
         if expected_sig != signature_from_wfp:
@@ -148,49 +148,50 @@ def verify_callback_signature(data: Dict[str, Any]) -> bool:
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     """
     Идемпотентная обработка коллбэка WayForPay.
-    Защита от дубликатов и старых callback’ов после /unsubscribe.
-    Обновляет платеж и подписку, отправляет сообщение пользователю.
+    Обновляет таблицу payments, активирует подписку и отправляет пользователю персональную ссылку.
     """
     try:
         if not verify_callback_signature(data):
-            log.info("⚠️ Callback signature failed:", data)
+            log.info("⚠️ Callback signature failed: %s", data)
             return
 
         status = (data.get("transactionStatus") or data.get("status") or "").lower()
         order_ref = data.get("orderReference", "")
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
-        log.info("✅ WFP callback received:", status, order_ref)
+        log.info("✅ WFP callback received: %s %s", status, order_ref)
 
+        # only approved payments for our auto-created order refs
         if not (status in ("approved", "accept", "success") and order_ref.startswith("sub-")):
+            log.info("Ignored WFP callback: status=%s order_ref=%s", status, order_ref)
             return
 
-        # Парсим user_id и timestamp заказа
+        # parse user_id and timestamp from order_ref (format sub-<user>-<ts>-...)
         try:
             _, uid_str, ts_str, *_ = order_ref.split("-")
             user_id = int(uid_str)
             order_ts = int(ts_str)
             order_dt = datetime.fromtimestamp(order_ts, tz=timezone.utc)
         except Exception:
-            log.info("🚫 Cannot parse order_ref:", order_ref)
+            log.info("🚫 Cannot parse order_ref: %s", order_ref)
             return
 
-        # Проверка дубликата платежа
+        # check duplicate payment
         async with Session() as s:
             res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
             pay = res.scalar_one_or_none()
             if pay and pay.status == "approved":
-                log.info("↩︎ Duplicate callback ignored:", order_ref)
+                log.info("↩︎ Duplicate callback ignored: %s", order_ref)
                 return
 
-        # Проверка «старого» callback после /unsubscribe
+        # check stale callback after unsubscribe
         async with Session() as s:
             sub = await s.get(Subscription, user_id)
             if sub and sub.updated_at and _tz_aware_utc(sub.updated_at) > order_dt:
-                log.info("⛔ Stale callback ignored (after unsubscribe):", order_ref)
+                log.info("⛔ Stale callback ignored (after unsubscribe): %s", order_ref)
                 return
 
-        # Фиксируем или создаём платеж
+        # record or update payment
         async with Session() as s:
             if pay:
                 pay.status = "approved"
@@ -206,31 +207,29 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
                 )
                 s.add(pay)
             await s.commit()
-            log.info(f"💰 Payment recorded: user={user_id}, order_ref={order_ref}")
+            log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
 
-        # Продлеваем или активируем подписку
+        # activate subscription (will send join-request invite message inside activate_or_extend)
         await activate_or_extend(bot, user_id)
-        
-# --- Отправка персональной ссылки пользователю ---
+        log.info("✅ Subscription activated/extended for user %s", user_id)
 
+        # additionally send short confirmation (in case activate_or_extend failed to deliver)
         try:
             invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
             await bot.send_message(
                 chat_id=user_id,
                 text=(
                     f"✅ Оплата успішна!\n"
-                    f"Перейдіть за вашим особистим посиланням у Telegram:\n"
-                    f"{invite_url}"
-                )
+                    f"Ось ваше особисте посилання для вступу: {invite_url}\n\n"
+                    f"Якщо посилання не працює — напишіть у підтримку."
+                ),
             )
-            log.info(f"📩 Personal invite sent to user {user_id}")
+            log.info("📩 Personal invite (fallback) sent to user %s", user_id)
         except Exception as e:
-            log.warning(f"Не удалось отправить ссылку пользователю {user_id}: {e}")
-    
-        log.info(f"✅ Subscription activated/extended for user {user_id}")
+            log.warning("Не удалось отправить персональное сообщение пользователю %s: %s", user_id, e)
 
-        except Exception:
-                                              
-        log.exception("Unhandled error in WFP callback handler")
+    except Exception:
+        log.exception("Unhandled error in WFP callback handler")            
+
 
 
