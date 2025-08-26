@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -21,9 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
-from sqlalchemy import select
 from bot.db import Session, Payment
-
 from bot.config import settings
 from bot.db import init_db
 from bot.handlers_start import router as start_router
@@ -35,15 +32,12 @@ from bot.payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
 
-# --------- общие настройки ---------
-INVITE_URL = getattr(settings, "TG_INVITE_URL", "https://t.me/+kgfXNg9m0Sw5N2Uy")
-
 # ---------------- Aiogram ----------------
 bot = Bot(
     token=settings.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-BOT_USERNAME: str | None = None
+BOT_USERNAME: str | None = None   # 🔹 здесь сохраним username
 dp = Dispatcher()
 
 # порядок важен: сперва стартовое меню, затем прочие роутеры
@@ -56,6 +50,8 @@ dp.include_router(buy_router)
 # ---------------- FastAPI ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global BOT_USERNAME
+
     # --- startup ---
     await init_db()
 
@@ -77,6 +73,14 @@ async def lifespan(app: FastAPI):
             log.info("Webhook уже установлен, ничего не делаем")
     except Exception as e:
         log.exception("Ошибка при установке webhook: %s", e)
+
+    # 🔹 Получаем username бота (важно для ссылок с токенами)
+    try:
+        me = await bot.get_me()
+        BOT_USERNAME = me.username
+        log.info("🤖 BOT_USERNAME установлен: @%s", BOT_USERNAME)
+    except Exception as e:
+        log.exception("Не удалось получить username бота: %s", e)
 
     # Scheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -134,26 +138,36 @@ async def thanks_page():
     </html>
     """)
 
+
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
     """
     WayForPay редиректит пользователя сюда после оплаты.
-    В query params обычно приходит orderReference — ищем payment и редиректим в TG_JOIN_REQUEST_URL?start=<user_id>
+    В query params обычно приходит orderReference — ищем payment и редиректим в t.me/<bot>?start=<token>
     """
-    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderReference[]")
-    if not order_ref:
-        return HTMLResponse("<h2>❌ Не передано orderReference</h2>", status_code=400)
+    from bot.db import PaymentToken  # чтобы избежать циклов импорта
 
-    # ищем платеж
+    token = request.query_params.get("token")
+    if not token:
+        return HTMLResponse("<h2>❌ Не передан token</h2>", status_code=400)
+
     async with Session() as s:
-        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-        pay = res.scalar_one_or_none()
-        if not pay:
-            return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
-        user_id = pay.user_id
+        res = await s.execute(select(PaymentToken).where(PaymentToken.token == token, PaymentToken.status == "pending"))
+        token_obj = res.scalar_one_or_none()
+        if not token_obj:
+            return HTMLResponse("<h2>❌ Токен не найден или уже использован</h2>", status_code=404)
 
-    invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
+        # помечаем токен как оплачен
+        token_obj.status = "paid"
+        await s.commit()
+        user_id = token_obj.user_id
+
+    if not BOT_USERNAME:
+        return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
+
+    invite_url = f"https://t.me/{BOT_USERNAME}?start={token}"
     return RedirectResponse(invite_url)
+
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
@@ -171,11 +185,3 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
-
-    
-
-
-
-
-
-
