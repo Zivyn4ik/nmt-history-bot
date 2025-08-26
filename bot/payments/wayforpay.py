@@ -12,10 +12,9 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 
-
 from bot.config import settings
 from bot.services import activate_or_extend, _tz_aware_utc
-from bot.db import Session, Subscription, Payment
+from bot.db import Session, Subscription, Payment, PaymentToken  # ⬅️ ДОБАВИЛИ PaymentToken
 
 log = logging.getLogger("bot.payments")
 WFP_API = "https://api.wayforpay.com/api"
@@ -53,6 +52,7 @@ async def create_invoice(
     amount: float,
     currency: str = "UAH",
     product_name: str = "Access to course (1 month)",
+    start_token: str | None = None,             # ⬅️ НОВЫЙ ПАРАМЕТР
 ) -> str:
     order_date = int(time.time())
     order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
@@ -65,7 +65,9 @@ async def create_invoice(
     base = make_base(merchant, domain, order_ref, order_date, amt, currency, product_name, 1, amt)
     signature = hmac_md5_hex(base, secret)
 
-    return_url = settings.BASE_URL.rstrip("/") + "/wfp/return"
+    # ⬇️ возвращаем пользователя в ваш бекенд с токеном, чтобы затем уйти в t.me/<bot>?start=<token>
+    ret_base = settings.BASE_URL.rstrip("/") + "/wfp/return"
+    return_url = f"{ret_base}?token={start_token}" if start_token else ret_base
     service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
 
     payload = {
@@ -85,25 +87,15 @@ async def create_invoice(
         "merchantSignature": signature,
     }
 
-    log.warning("📤 WFP payload:", {k: v for k, v in payload.items() if k != "merchantSignature"})
-    log.warning("🔧 base =", base)
-    log.warning("🔑 signature =", signature)
+    log.warning("📤 WFP payload: %s", {k: v for k, v in payload.items() if k != "merchantSignature"})
+    log.warning("🔧 base = %s", base)
+    log.warning("🔑 signature = %s", signature)
 
     async with httpx.AsyncClient(timeout=25) as cli:
-        try:
-            r = await cli.post(WFP_API, json=payload)
-            r.raise_for_status()
-            data = r.json()
-            log.info("📥 WFP response: %s", data)
-        except httpx.RequestError as e:
-            log.error("HTTP error while creating invoice: %s", e)
-            raise
-        except httpx.HTTPStatusError as e:
-            log.error("WayForPay returned error status: %s - %s", e.response.status_code, e.response.text)
-            raise
-        except Exception as e:
-            log.exception("Unexpected error during invoice creation: %s", e)
-            raise
+        r = await cli.post(WFP_API, json=payload)
+        r.raise_for_status()
+        data = r.json()
+        log.info("📥 WFP response: %s", data)
 
     url = data.get("invoiceUrl") or data.get("formUrl") or data.get("url")
     if not url:
@@ -121,7 +113,7 @@ def verify_callback_signature(data: Dict[str, Any]) -> bool:
         order_ref = data.get("orderReference", "")
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
-        product_name = data.get("productName", [""])[0]
+        product_name = (data.get("productName") or [""])[0]
         order_date = int(data.get("orderDate", time.time()))
 
         base = make_base(
@@ -144,10 +136,11 @@ def verify_callback_signature(data: Dict[str, Any]) -> bool:
         log.exception("Error verifying callback signature: %s", data)
         return False
 
+
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     """
     Идемпотентная обработка коллбэка WayForPay.
-    Обновляет таблицу payments, активирует подписку, обновляет токен и отправляет пользователю персональную ссылку.
+    Обновляет таблицу payments и переводит последний pending-токен пользователя в paid.
     """
     try:
         if not verify_callback_signature(data):
@@ -200,7 +193,7 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
                 pay = Payment(
                     user_id=user_id,
                     order_ref=order_ref,
-                    amount=amount,
+                    amount=float(amount) if amount else 0.0,
                     currency=currency,
                     status="approved",
                 )
@@ -208,40 +201,21 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             await s.commit()
             log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
 
-        # ✅ Обновляем токен после фиксации Payment
+        # ✅ Переводим ПОСЛЕДНИЙ pending-токен этого пользователя в paid
         async with Session() as s:
             res = await s.execute(
-                select(PaymentToken).where(
-                    PaymentToken.user_id == user_id,
-                    PaymentToken.status == "pending"
-                )
+                select(PaymentToken)
+                .where(PaymentToken.user_id == user_id, PaymentToken.status == "pending")
+                .order_by(PaymentToken.created_at.desc())
             )
-            token_obj = res.scalar_one_or_none()
+            token_obj = res.scalars().first()
             if token_obj:
                 token_obj.status = "paid"
                 await s.commit()
-                log.info(f"💎 Token marked as paid for user {user_id}")
+                log.info("💎 Token marked as PAID for user %s: %s", user_id, token_obj.token)
 
-        # activate subscription (will send join-request invite message inside activate_or_extend)
-        await activate_or_extend(bot, user_id)
-        log.info("✅ Subscription activated/extended for user %s", user_id)
-
-        # additionally send short confirmation (in case activate_or_extend failed to deliver)
-        try:
-            invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
-            await bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"✅ Оплата успішна!\n"
-                    f"Ось ваше особисте посилання для вступу: {invite_url}\n\n"
-                    f"Якщо посилання не працює — напишіть у підтримку."
-                ),
-            )
-            log.info("📩 Personal invite (fallback) sent to user %s", user_id)
-        except Exception as e:
-            log.warning("Не удалось отправить персональное сообщение пользователю %s: %s", user_id, e)
+        # ⛔ Специальных сообщений тут не шлём — весь поток завершится через /start <token>
+        # (fallback-сообщения могут путать пользователя и ломать одноразовость ссылки)
 
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
-
-
