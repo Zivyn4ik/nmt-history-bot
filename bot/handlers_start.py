@@ -34,7 +34,7 @@ async def start_handler(message: Message):
     await ensure_user(user)
 
     # проверяем, пришёл ли токен через start parameter
-    token = message.get_args()  # или message.start_param в новых версиях aiogram
+    token = getattr(message, "start_param", None)  # корректно для Aiogram 3.3+
     if token:
         async with Session() as s:
             res = await s.execute(
