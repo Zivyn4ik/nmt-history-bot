@@ -45,18 +45,18 @@ def make_base(
         f"{merchant};{domain};{order_ref};{order_date};"
         f"{amount_str};{currency};{product_name};{product_count};{product_price_str}"
     )
+    
 
-# ---------- public API ----------
 async def create_invoice(
     user_id: int,
     amount: float,
     currency: str = "UAH",
     product_name: str = "Access to course (1 month)",
-    start_token: str | None = None,             # ⬅️ НОВЫЙ ПАРАМЕТР
-) -> str:
+    start_token: str | None = None,
+) -> tuple[str, str]:  # возвращаем (url, order_ref)
     order_date = int(time.time())
     order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
-
+    
     merchant = settings.WFP_MERCHANT.strip()
     domain = settings.WFP_DOMAIN.strip()
     secret = settings.WFP_SECRET.strip()
@@ -65,7 +65,6 @@ async def create_invoice(
     base = make_base(merchant, domain, order_ref, order_date, amt, currency, product_name, 1, amt)
     signature = hmac_md5_hex(base, secret)
 
-    # ⬇️ возвращаем пользователя в ваш бекенд с токеном, чтобы затем уйти в t.me/<bot>?start=<token>
     ret_base = settings.BASE_URL.rstrip("/") + "/wfp/return"
     return_url = f"{ret_base}?token={start_token}" if start_token else ret_base
     service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
@@ -100,7 +99,8 @@ async def create_invoice(
     url = data.get("invoiceUrl") or data.get("formUrl") or data.get("url")
     if not url:
         raise RuntimeError(f"WayForPay error: {data.get('reasonCode')} — {data.get('reason')}")
-    return url
+    
+    return url, order_ref
 
 
 def verify_callback_signature(data: Dict[str, Any]) -> bool:
@@ -219,3 +219,4 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
 
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
+
