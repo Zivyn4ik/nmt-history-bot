@@ -144,11 +144,10 @@ def verify_callback_signature(data: Dict[str, Any]) -> bool:
         log.exception("Error verifying callback signature: %s", data)
         return False
 
-
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     """
     Идемпотентная обработка коллбэка WayForPay.
-    Обновляет таблицу payments, активирует подписку и отправляет пользователю персональную ссылку.
+    Обновляет таблицу payments, активирует подписку, обновляет токен и отправляет пользователю персональную ссылку.
     """
     try:
         if not verify_callback_signature(data):
@@ -209,6 +208,20 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             await s.commit()
             log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
 
+        # ✅ Обновляем токен после фиксации Payment
+        async with Session() as s:
+            res = await s.execute(
+                select(PaymentToken).where(
+                    PaymentToken.user_id == user_id,
+                    PaymentToken.status == "pending"
+                )
+            )
+            token_obj = res.scalar_one_or_none()
+            if token_obj:
+                token_obj.status = "paid"
+                await s.commit()
+                log.info(f"💎 Token marked as paid for user {user_id}")
+
         # activate subscription (will send join-request invite message inside activate_or_extend)
         await activate_or_extend(bot, user_id)
         log.info("✅ Subscription activated/extended for user %s", user_id)
@@ -229,7 +242,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             log.warning("Не удалось отправить персональное сообщение пользователю %s: %s", user_id, e)
 
     except Exception:
-        log.exception("Unhandled error in WFP callback handler")            
-
+        log.exception("Unhandled error in WFP callback handler")
 
 
