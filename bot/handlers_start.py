@@ -1,99 +1,219 @@
 from __future__ import annotations
 
-from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+import logging
+import os
+import asyncio
+from urllib.parse import urlparse
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.responses import JSONResponse, HTMLResponse
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import Update
+from aiogram.exceptions import TelegramRetryAfter
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
+from bot.db import Session, Payment
 from bot.config import settings
-from bot.services import ensure_user, get_subscription_status
-from bot.handlers_buy import cmd_buy  # ✅ исправлено: берём функцию buy из handlers_buy.py
-from bot.db import Session, PaymentToken
+from bot.db import init_db
+from bot.handlers_start import router as start_router
+from bot.handlers import router as handlers_router
+from bot.handlers_wipe import router as wipe_router
+from bot.handlers_buy import router as buy_router
+from bot.services import enforce_expirations
+from bot.payments.wayforpay import process_callback
 
-router = Router()
+log = logging.getLogger("app")
 
-# --- keyboards ---------------------------------------------------------------
+# ---------------- Aiogram ----------------
+bot = Bot(
+    token=settings.BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
+BOT_USERNAME: str | None = None   # 🔹 здесь сохраним username
+dp = Dispatcher()
 
-def _main_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
-        [InlineKeyboardButton(text="✅ Перевірка статусу підписки", callback_data="check_status")],
-        [InlineKeyboardButton(text="💬 Підтримка", url="https://t.me/zivyn4ik")],
-    ])
+# порядок важен: сперва стартовое меню, затем прочие роутеры
+dp.include_router(start_router)
+dp.include_router(handlers_router)
+dp.include_router(wipe_router)
+dp.include_router(buy_router)
 
-def _buy_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
-    ])
 
-# --- /start ------------------------------------------------------------------
+# ---------------- FastAPI ----------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global BOT_USERNAME
 
-@router.message(CommandStart())
-async def start_handler(message: Message):
-    user = message.from_user
-    await ensure_user(user)
+    # --- startup ---
+    await init_db()
 
-    # проверяем, пришёл ли токен через start parameter
-    token = getattr(message, "start_param", None)  # корректно для Aiogram 3.3+
+    # Безопасная установка webhook
+    try:
+        base = normalize_base_url(settings.BASE_URL)
+        webhook_url = f"{base}/telegram/webhook"
+
+        info = await bot.get_webhook_info()
+        if info.url != webhook_url:
+            try:
+                await bot.set_webhook(webhook_url)
+                log.info("Telegram webhook установлен: %s", webhook_url)
+            except TelegramRetryAfter as e:
+                log.warning("Flood control, retry через %s секунд", e.retry_after)
+                await asyncio.sleep(e.retry_after)
+                await bot.set_webhook(webhook_url)
+        else:
+            log.info("Webhook уже установлен, ничего не делаем")
+    except Exception as e:
+        log.exception("Ошибка при установке webhook: %s", e)
+
+    # 🔹 Получаем username бота (важно для ссылок с токенами)
+    try:
+        me = await bot.get_me()
+        BOT_USERNAME = me.username
+        log.info("🤖 BOT_USERNAME установлен: @%s", BOT_USERNAME)
+    except Exception as e:
+        log.exception("Не удалось получить username бота: %s", e)
+
+    # Scheduler
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), kwargs={"bot": bot})
+    scheduler.add_job(enforce_expirations, CronTrigger(hour="*/6"), kwargs={"bot": bot})
+    scheduler.start()
+    log.info("Scheduler запущен: подписки проверяются ежедневно и каждые 6 часов")
+
+    # --- приложение работает ---
+    yield
+
+    # --- shutdown ---
+    await bot.session.close()
+
+
+app = FastAPI(title="TG Subscription Bot", lifespan=lifespan)
+
+
+# ---------- helpers ----------
+def normalize_base_url(u: str) -> str:
+    """Добавляет https:// при необходимости и убирает хвостовой слэш."""
+    u = (u or "").strip()
+    if not urlparse(u).scheme:
+        u = "https://" + u
+    return u.rstrip("/")
+
+
+# ---------- routes ----------
+@app.get("/")
+async def root():
+    return {"ok": True}
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+
+@app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
+async def thanks_page():
+    return HTMLResponse(f"""
+    <html>
+    <head>
+        <title>Дякуємо за оплату!</title>
+        <style>
+            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
+            a {{ color: #4cc9f0; font-size: 18px; }}
+        </style>
+    </head>
+    <body>
+        <h2>✅ Оплата пройшла успішно!</h2>
+        <p>Бот щойно надіслав вам особисте посилання в Telegram 📩</p>
+        <p>Відкрийте чат з ботом, щоб увійти до каналу.</p>
+    </body>
+    </html>
+    """)
+
+@app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
+async def wfp_return(request: Request):
+    """
+    WayForPay редиректит пользователя сюда после оплаты.
+    Поддерживаем два сценария:
+      1) returnUrl был с ?token=<token> -> в запросе будет token
+         — тогда просто помечаем токен как paid и редиректим в t.me/<bot>?start=<token>
+      2) если пришёл orderReference — ищем Payment по order_ref,
+         берём последний pending token для pay.user_id и помечаем paid,
+         далее редиректим в t.me/<bot>?start=<token>
+    """
+    from bot.db import PaymentToken  # локально, чтобы избежать циклов импорта
+
+    # 1) token-first flow (create_invoice добавляет ?token=...)
+    token = request.query_params.get("token")
     if token:
         async with Session() as s:
-            res = await s.execute(
-                select(PaymentToken).where(
-                    PaymentToken.token == token,
-                    PaymentToken.status == "paid"  # ✅ ищем оплаченный токен
-                )
-            )
+            res = await s.execute(select(PaymentToken).where(PaymentToken.token == token))
             token_obj = res.scalar_one_or_none()
-            if token_obj:
-                # отмечаем токен как использованный
-                token_obj.status = "used"
+            if not token_obj:
+                return HTMLResponse("<h2>❌ Токен не знайдено</h2>", status_code=404)
+
+            # помечаем paid (если ещё pending)
+            if token_obj.status == "pending":
+                token_obj.status = "paid"
                 await s.commit()
-                # отправляем персональное приглашение
-                invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user.id}"
-                await message.answer(
-                    f"✅ Ваш персональний доступ готовий!\n\n"
-                    f"Посилання для вступу: {invite_url}"
-                )
 
-    # обычное приветствие и кнопки
-    text = (
-        "👋 <b>Вітаємо у навчальному боті HMT 2026 | Історія України!</b>\n\n"
-        "📚 Тут ви отримаєте доступ до:\n"
-        "• Таблиць для підготовки до НМТ\n"
-        "• Тестів та завдань з поясненнями\n"
-        "• Корисних матеріалів від викладачів\n\n"
-        "🧭 Скористайтесь кнопками нижче."
-    )
-    await message.answer(text, reply_markup=_main_menu_kb())
-# --- callbacks ---------------------------------------------------------------
+        if not BOT_USERNAME:
+            return HTMLResponse("<h2>⚠️ BOT_USERNAME не встановлено</h2>", status_code=500)
+        return RedirectResponse(f"https://t.me/{BOT_USERNAME}?start={token}")
 
-@router.callback_query(F.data == "buy")
-async def cb_buy(call: CallbackQuery, bot: Bot):
-    """
-    Теперь вместо несуществующей функции on_buy_subscription
-    вызываем cmd_buy напрямую.
-    """
-    await cmd_buy(call.message, bot)  # передаем Message и Bot
+    # 2) orderReference flow
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderReference[]")
+    if not order_ref:
+        return HTMLResponse("<h2>❌ Не передано orderReference</h2>", status_code=400)
 
-@router.callback_query(F.data == "check_status")
-async def cb_check(call: CallbackQuery):
-    """Проверка статуса напрямую."""
-    await call.answer()
-    user = call.from_user
-    await ensure_user(user)
+    async with Session() as s:
+        # ищем Payment
+        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
+        pay = res.scalar_one_or_none()
+        if not pay:
+            return HTMLResponse("<h2>❌ Платеж не знайдено</h2>", status_code=404)
 
-    sub = await get_subscription_status(user.id)
-    invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
-
-    if getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None):
-        text = f"✅ Підписка активна до <b>{sub.paid_until.date()}</b>."
-        if invite:
-            text += f"\nЯкщо ви ще не в каналі — перейдіть за посиланням:\n{invite}"
-        await call.message.answer(text)
-    else:
-        await call.message.answer(
-            "❌ Підписки немає або вона завершилась.\n\n"
-            "Щоб отримати доступ — натисніть кнопку нижче 👇",
-            reply_markup=_buy_kb(),
+        # ищем последний pending token для этого user_id
+        res = await s.execute(
+            select(PaymentToken)
+            .where(PaymentToken.user_id == pay.user_id)
+            .order_by(PaymentToken.created_at.desc())
         )
+        token_obj = res.scalar_one_or_none()
+        if not token_obj:
+            return HTMLResponse("<h2>❌ Токен не знайдено для користувача</h2>", status_code=404)
 
+        if token_obj.status == "pending":
+            token_obj.status = "paid"
+            await s.commit()
+
+    if not BOT_USERNAME:
+        return HTMLResponse("<h2>⚠️ BOT_USERNAME не встановлено</h2>", status_code=500)
+
+    return RedirectResponse(f"https://t.me/{BOT_USERNAME}?start={token_obj.token}")
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.model_validate(data)
+    await dp.feed_update(bot, update)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/payments/wayforpay/callback")
+async def wayforpay_callback(req: Request):
+    try:
+        data = await req.json()
+    except Exception:
+        data = {}
+    await process_callback(bot, data)
+    return {"ok": True}
