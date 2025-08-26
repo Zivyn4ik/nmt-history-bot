@@ -67,7 +67,18 @@ class Payment(Base):
     )
 
 
+class PaymentToken(Base):
+    __tablename__ = "payment_tokens"
+
+    token: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | paid | used
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+
 async def init_db():
     """Инициализация БД и создание таблиц"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
