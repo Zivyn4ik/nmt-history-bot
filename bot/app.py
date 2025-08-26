@@ -43,6 +43,7 @@ bot = Bot(
     token=settings.BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
+BOT_USERNAME: str | None = None
 dp = Dispatcher()
 
 # порядок важен: сперва стартовое меню, затем прочие роутеры
@@ -172,6 +173,7 @@ async def wayforpay_callback(req: Request):
     return {"ok": True}
 
     
+
 
 
 
