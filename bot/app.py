@@ -138,35 +138,45 @@ async def thanks_page():
     </html>
     """)
 
-
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
     """
     WayForPay редиректит пользователя сюда после оплаты.
-    В query params обычно приходит orderReference — ищем payment и редиректим в t.me/<bot>?start=<token>
+    В query params приходит orderReference — ищем payment и обновляем token.
     """
-    from bot.db import PaymentToken  # чтобы избежать циклов импорта
+    from bot.db import Payment, PaymentToken
 
-    token = request.query_params.get("token")
-    if not token:
-        return HTMLResponse("<h2>❌ Не передан token</h2>", status_code=400)
+    order_ref = request.query_params.get("orderReference")
+    if not order_ref:
+        return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
 
     async with Session() as s:
-        res = await s.execute(select(PaymentToken).where(PaymentToken.token == token, PaymentToken.status == "pending"))
+        # ищем Payment
+        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
+        pay = res.scalar_one_or_none()
+        if not pay:
+            return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
+
+        # ищем token для этого пользователя
+        res = await s.execute(
+            select(PaymentToken)
+            .where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending")
+            .order_by(PaymentToken.created_at.desc())
+        )
         token_obj = res.scalar_one_or_none()
         if not token_obj:
-            return HTMLResponse("<h2>❌ Токен не найден или уже использован</h2>", status_code=404)
+            return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
 
         # помечаем токен как оплачен
         token_obj.status = "paid"
         await s.commit()
-        user_id = token_obj.user_id
 
-    if not BOT_USERNAME:
-        return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
+        # редирект на Telegram с токеном
+        if not BOT_USERNAME:
+            return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
 
-    invite_url = f"https://t.me/{BOT_USERNAME}?start={token}"
-    return RedirectResponse(invite_url)
+        invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
+        return RedirectResponse(invite_url)
 
 
 @app.post("/telegram/webhook")
@@ -185,3 +195,4 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
