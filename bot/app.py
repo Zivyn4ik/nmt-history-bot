@@ -21,6 +21,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
+from sqlalchemy import select
+from bot.db import Session, Payment
+
 from bot.config import settings
 from bot.db import init_db
 from bot.handlers_start import router as start_router
@@ -132,20 +135,24 @@ async def thanks_page():
 
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
-    order_ref = request.query_params.get("orderReference")
+    """
+    WayForPay редиректит пользователя сюда после оплаты.
+    В query params обычно приходит orderReference — ищем payment и редиректим в TG_JOIN_REQUEST_URL?start=<user_id>
+    """
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderReference[]")
     if not order_ref:
-        return HTMLResponse("<h2>❌ Не передано orderReference</h2>")
+        return HTMLResponse("<h2>❌ Не передано orderReference</h2>", status_code=400)
 
+    # ищем платеж
     async with Session() as s:
         res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
         pay = res.scalar_one_or_none()
         if not pay:
-            return HTMLResponse("<h2>❌ Платеж не найден</h2>")
+            return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
         user_id = pay.user_id
 
     invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user_id}"
     return RedirectResponse(invite_url)
-
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
@@ -165,6 +172,7 @@ async def wayforpay_callback(req: Request):
     return {"ok": True}
 
     
+
 
 
 
