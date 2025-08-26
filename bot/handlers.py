@@ -33,8 +33,8 @@ async def cmd_buy(message: Message, bot: Bot):
                 )
             )
             await session.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Не вдалося очистити старі токени для user=%s: %s", user_id, e)
 
     # 2) Создаём новый pending-токен
     token = uuid.uuid4().hex
@@ -59,7 +59,7 @@ async def cmd_buy(message: Message, bot: Bot):
         )
     except Exception as e:
         log.exception("Failed to create invoice for user %s: %s", user_id, e)
-        await message.answer(f"Не вдалося сформувати рахунок. Причина: {e}")
+        await message.answer("Не вдалося сформувати рахунок. Спробуйте ще раз пізніше.")
         return
 
     # 4) Кнопка "Оплатити"
@@ -67,6 +67,7 @@ async def cmd_buy(message: Message, bot: Bot):
         inline_keyboard=[[InlineKeyboardButton(text="Оплатити", url=url)]]
     )
     await message.answer(
-        "Рахунок на 1 місяць сформовано. Натисніть «Оплатити».",
+        "✅ Рахунок на 1 місяць сформовано!\n"
+        "Натисніть «Оплатити», а після успішної оплати ви автоматично отримаєте доступ.",
         reply_markup=kb
     )
