@@ -40,7 +40,7 @@ async def start_handler(message: Message):
             res = await s.execute(
                 select(PaymentToken).where(
                     PaymentToken.token == token,
-                    PaymentToken.status == "pending"
+                    PaymentToken.status == "paid"  # ✅ ищем оплаченный токен
                 )
             )
             token_obj = res.scalar_one_or_none()
@@ -65,7 +65,6 @@ async def start_handler(message: Message):
         "🧭 Скористайтесь кнопками нижче."
     )
     await message.answer(text, reply_markup=_main_menu_kb())
-
 # --- callbacks ---------------------------------------------------------------
 
 @router.callback_query(F.data == "buy")
@@ -97,3 +96,4 @@ async def cb_check(call: CallbackQuery):
             "Щоб отримати доступ — натисніть кнопку нижче 👇",
             reply_markup=_buy_kb(),
         )
+
