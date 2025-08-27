@@ -119,14 +119,21 @@ async def healthz():
     return {"ok": True}
 
 
-@app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
-async def thanks_page(request: Request):
-    order_ref = (
-        request.query_params.get("orderReference")
-        or request.query_params.get("orderRef")
-    )
+@app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
+async def wfp_return(request: Request):
+    # Логируем весь запрос
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    log.info("🔥 Пришёл запрос в /wfp/return: query=%s, json=%s", dict(request.query_params), data)
+
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef") or data.get("orderReference") or data.get("orderRef")
+
+    log.info("💳 Получен orderReference: %s", order_ref)
 
     if not order_ref:
+        return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
         try:
             data = await request.json()
             print("📩 Пришёл callback от WayForPay:", data)  # лог
@@ -230,3 +237,4 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
