@@ -143,10 +143,15 @@ order_ref = (
     or request.query_params.get("orderRef")
 )
 
+order_ref = (
+    request.query_params.get("orderReference")
+    or request.query_params.get("orderRef")
+)
+
 if not order_ref:
     try:
         data = await request.json()
-        print("📩 Пришёл callback от WayForPay:", data)  # 🔥 Логируем тело
+        print("📩 Пришёл callback от WayForPay:", data)  # лог
         order_ref = data.get("orderReference") or data.get("orderRef")
     except Exception as e:
         print("⚠️ Ошибка при чтении JSON:", e)
@@ -155,6 +160,7 @@ if not order_ref:
 
 if not order_ref:
     return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
+
 
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
@@ -212,5 +218,6 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
 
 
