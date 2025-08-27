@@ -6,14 +6,14 @@ import hmac
 import hashlib
 import logging
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
 
 from bot.config import settings
-from bot.services import activate_or_extend, _tz_aware_utc
+from bot.services import _tz_aware_utc
 from bot.db import Session, Subscription, Payment, PaymentToken
 
 log = logging.getLogger("bot.payments")
@@ -39,9 +39,6 @@ def make_base(
     product_counts: list[int],
     product_prices: list[str],
 ) -> str:
-    """
-    Формирует строку для merchantSignature для CREATE_INVOICE с несколькими товарами.
-    """
     products_name_str = ";".join(product_names)
     products_count_str = ";".join(map(str, product_counts))
     products_price_str = ";".join(product_prices)
@@ -49,10 +46,6 @@ def make_base(
 
 # ---------- WayForPay signature ----------
 def validate_wfp_signature(data: Dict[str, Any]) -> bool:
-    """
-    Проверяет merchantSignature WayForPay.
-    Поддерживает orderReference и orderRef.
-    """
     signature_from_wfp = data.get("merchantSignature")
     if not signature_from_wfp:
         log.warning("Callback missing merchantSignature: %s", data)
@@ -96,7 +89,7 @@ async def create_invoice(
     currency: str = "UAH",
     product_name: str = "Access to course (1 month)",
     start_token: str | None = None,
-) -> tuple[str, str]:  # возвращаем (url, order_ref)
+) -> tuple[str, str]:
     order_date = int(time.time())
     order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
 
@@ -106,7 +99,6 @@ async def create_invoice(
 
     amt = money2(amount)
 
-    # ✅ исправлено: создаём списки для поддержки нескольких товаров
     product_names = [product_name]
     product_counts = [1]
     product_prices = [amt]
@@ -152,12 +144,7 @@ async def create_invoice(
     
     return url, order_ref
 
-
 async def process_callback(bot, data: Dict[str, Any]) -> None:
-    """
-    Идемпотентная обработка коллбэка WayForPay.
-    Обновляет таблицу payments и переводит последний pending-токен пользователя в paid.
-    """
     try:
         if not validate_wfp_signature(data):
             log.info("⚠️ Callback signature failed: %s", data)
@@ -183,19 +170,20 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             return
 
         async with Session() as s:
+            # Проверяем дубли
             res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
             pay = res.scalar_one_or_none()
             if pay and pay.status == "approved":
                 log.info("↩︎ Duplicate callback ignored: %s", order_ref)
                 return
 
-        async with Session() as s:
+            # Проверяем устаревшие callback после отмены подписки
             sub = await s.get(Subscription, user_id)
             if sub and sub.updated_at and _tz_aware_utc(sub.updated_at) > order_dt:
                 log.info("⛔ Stale callback ignored (after unsubscribe): %s", order_ref)
                 return
 
-        async with Session() as s:
+            # Сохраняем или обновляем платеж
             if pay:
                 pay.status = "approved"
                 pay.amount = amount
@@ -212,7 +200,7 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             await s.commit()
             log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
 
-        async with Session() as s:
+            # Помечаем последний pending токен как paid
             res = await s.execute(
                 select(PaymentToken)
                 .where(PaymentToken.user_id == user_id, PaymentToken.status == "pending")
