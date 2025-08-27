@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from starlette.responses import JSONResponse, HTMLResponse
+from starlette.responses import JSONResponse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -138,15 +138,24 @@ async def thanks_page():
     </html>
     """)
 
+
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
     """
     WayForPay редиректит пользователя сюда после оплаты.
-    В query params приходит orderReference — ищем payment и обновляем token.
+    Теперь функция проверяет и query params, и JSON тело запроса.
     """
     from bot.db import Payment, PaymentToken
 
+    # --- Пытаемся получить orderReference ---
     order_ref = request.query_params.get("orderReference")
+    if not order_ref:
+        try:
+            data = await request.json()
+            order_ref = data.get("orderReference")
+        except Exception:
+            order_ref = None
+
     if not order_ref:
         return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
 
@@ -195,4 +204,3 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
-
