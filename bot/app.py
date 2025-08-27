@@ -144,15 +144,16 @@ async def wfp_return(request: Request):
     """
     WayForPay редиректит пользователя сюда после оплаты.
     Теперь функция проверяет и query params, и JSON тело запроса.
+    Поддерживает оба варианта: orderReference и orderRef
     """
     from bot.db import Payment, PaymentToken
 
-    # --- Пытаемся получить orderReference ---
-    order_ref = request.query_params.get("orderReference")
+    # --- Пытаемся получить orderReference / orderRef ---
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef")
     if not order_ref:
         try:
             data = await request.json()
-            order_ref = data.get("orderReference")
+            order_ref = data.get("orderReference") or data.get("orderRef")
         except Exception:
             order_ref = None
 
