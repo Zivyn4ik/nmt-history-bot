@@ -46,7 +46,6 @@ dp.include_router(handlers_router)
 dp.include_router(wipe_router)
 dp.include_router(buy_router)
 
-
 # ---------------- FastAPI ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -98,7 +97,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TG Subscription Bot", lifespan=lifespan)
 
-
 # ---------- helpers ----------
 def normalize_base_url(u: str) -> str:
     """Добавляет https:// при необходимости и убирает хвостовой слэш."""
@@ -107,39 +105,29 @@ def normalize_base_url(u: str) -> str:
         u = "https://" + u
     return u.rstrip("/")
 
-
 # ---------- routes ----------
 @app.get("/")
 async def root():
     return {"ok": True}
 
-
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
 
-
-@app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
-async def wfp_return(request: Request):
-    # Логируем весь запрос
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    log.info("🔥 Пришёл запрос в /wfp/return: query=%s, json=%s", dict(request.query_params), data)
-
-    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef") or data.get("orderReference") or data.get("orderRef")
-
-    log.info("💳 Получен orderReference: %s", order_ref)
+@app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
+async def thanks_page(request: Request):
+    order_ref = (
+        request.query_params.get("orderReference")
+        or request.query_params.get("orderRef")
+    )
 
     if not order_ref:
-        return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
         try:
             data = await request.json()
-            print("📩 Пришёл callback от WayForPay:", data)  # лог
+            log.info("📩 Пришёл callback от WayForPay в /thanks: %s", data)
             order_ref = data.get("orderReference") or data.get("orderRef")
         except Exception as e:
-            print("⚠️ Ошибка при чтении JSON:", e)
+            log.warning("⚠️ Ошибка при чтении JSON в /thanks: %s", e)
             data = {}
             order_ref = None
 
@@ -163,7 +151,6 @@ async def wfp_return(request: Request):
     </html>
     """)
 
-
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
     """
@@ -173,20 +160,14 @@ async def wfp_return(request: Request):
     """
     from bot.db import Payment, PaymentToken
 
-    # --- Пытаемся получить orderReference / orderRef ---
-    order_ref = (
-        request.query_params.get("orderReference")
-        or request.query_params.get("orderRef")
-    )
+    # Логируем весь запрос
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    log.info("🔥 Пришёл запрос в /wfp/return: query=%s, json=%s", dict(request.query_params), data)
 
-    if not order_ref:
-        try:
-            data = await request.json()
-            order_ref = data.get("orderReference") or data.get("orderRef")
-        except Exception:
-            order_ref = None
-
-    # 🔹 Логируем значение order_ref
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef") or data.get("orderReference") or data.get("orderRef")
     log.info("💳 Получен orderReference: %s", order_ref)
 
     if not order_ref:
@@ -235,6 +216,6 @@ async def wayforpay_callback(req: Request):
         data = await req.json()
     except Exception:
         data = {}
+    log.info("📩 Пришёл callback от WayForPay в /callback: %s", data)
     await process_callback(bot, data)
     return {"ok": True}
-
