@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 
-
 from bot.config import settings
 from bot.services import activate_or_extend, _tz_aware_utc
 from bot.db import Session, Subscription, Payment, PaymentToken
@@ -46,6 +45,45 @@ def make_base(
         f"{merchant};{domain};{order_ref};{order_date};"
         f"{amount_str};{currency};{product_name};{product_count};{product_price_str}"
     )
+
+# ---------- WayForPay signature ----------
+def validate_wfp_signature(data: Dict[str, Any]) -> bool:
+    """
+    Проверяет merchantSignature WayForPay.
+    Поддерживает orderReference и orderRef.
+    """
+    signature_from_wfp = data.get("merchantSignature")
+    if not signature_from_wfp:
+        log.warning("Callback missing merchantSignature: %s", data)
+        return False
+
+    try:
+        # Поддержка разных ключей для orderReference
+        order_ref = data.get("orderReference") or data.get("orderRef") or ""
+        amount = str(data.get("amount") or "0")
+        currency = str(data.get("currency") or "")
+        product_name = (data.get("productName") or [""])[0]
+        order_date = int(data.get("orderDate", time.time()))
+
+        base = make_base(
+            merchant=settings.WFP_MERCHANT.strip(),
+            domain=settings.WFP_DOMAIN.strip(),
+            order_ref=order_ref,
+            order_date=order_date,
+            amount_str=amount,
+            currency=currency,
+            product_name=product_name,
+            product_count=1,
+            product_price_str=amount,
+        )
+        expected_sig = hmac_md5_hex(base, settings.WFP_SECRET.strip())
+        if expected_sig != signature_from_wfp:
+            log.warning("Invalid merchantSignature. Expected %s, got %s", expected_sig, signature_from_wfp)
+            return False
+        return True
+    except Exception:
+        log.exception("Error verifying callback signature: %s", data)
+        return False
 
 # ---------- public API ----------
 async def create_invoice(
@@ -105,47 +143,13 @@ async def create_invoice(
     return url, order_ref
 
 
-def verify_callback_signature(data: Dict[str, Any]) -> bool:
-    signature_from_wfp = data.get("merchantSignature")
-    if not signature_from_wfp:
-        log.warning("Callback missing merchantSignature: %s", data)
-        return False
-
-    try:
-        order_ref = data.get("orderReference", "")
-        amount = str(data.get("amount") or "0")
-        currency = str(data.get("currency") or "")
-        product_name = (data.get("productName") or [""])[0]
-        order_date = int(data.get("orderDate", time.time()))
-
-        base = make_base(
-            merchant=settings.WFP_MERCHANT.strip(),
-            domain=settings.WFP_DOMAIN.strip(),
-            order_ref=order_ref,
-            order_date=order_date,
-            amount_str=amount,
-            currency=currency,
-            product_name=product_name,
-            product_count=1,
-            product_price_str=amount,
-        )
-        expected_sig = hmac_md5_hex(base, settings.WFP_SECRET.strip())
-        if expected_sig != signature_from_wfp:
-            log.warning("Invalid merchantSignature. Expected %s, got %s", expected_sig, signature_from_wfp)
-            return False
-        return True
-    except Exception:
-        log.exception("Error verifying callback signature: %s", data)
-        return False
-
-
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     """
     Идемпотентная обработка коллбэка WayForPay.
     Обновляет таблицу payments и переводит последний pending-токен пользователя в paid.
     """
     try:
-        if not verify_callback_signature(data):
+        if not validate_wfp_signature(data):
             log.info("⚠️ Callback signature failed: %s", data)
             return
 
@@ -217,7 +221,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
                 log.info("💎 Token marked as PAID for user %s: %s", user_id, token_obj.token)
 
         # ⛔ Специальных сообщений тут не шлём — весь поток завершится через /start <token>
-        # (fallback-сообщения могут путать пользователя и ломать одноразовость ссылки)
 
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
