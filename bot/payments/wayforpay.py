@@ -58,6 +58,7 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
         order_date = int(data.get("orderDate", time.time()))
 
         product_names = data.get("productName") or [""]
+
         product_counts = data.get("productCount") or [1]
         product_prices = data.get("productPrice") or [amount]
 
@@ -81,7 +82,7 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
     except Exception:
         log.exception("Error verifying callback signature: %s", data)
         return False
-        
+
 
 async def create_invoice(
     user_id: int,
@@ -90,27 +91,19 @@ async def create_invoice(
     product_name: str = "Access to course (1 month)",
     start_token: str | None = None,
 ) -> tuple[str, str]:
-    """
-    Создает счет в WayForPay.
-    Возвращает кортеж: (ссылка на оплату, orderReference).
-    Гарантирует, что orderReference всегда передается корректно.
-    """
-    # 1️⃣ Генерация уникального orderReference
     order_date = int(time.time())
     order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
-    order_ref = str(order_ref)  # на всякий случай приводим к строке
+    order_ref = str(order_ref)
 
     merchant = settings.WFP_MERCHANT.strip()
     domain = settings.WFP_DOMAIN.strip()
     secret = settings.WFP_SECRET.strip()
     amt = money2(amount)
 
-    # 2️⃣ Формируем списки товаров
     product_names = [product_name]
     product_counts = [1]
     product_prices = [amt]
 
-    # 3️⃣ Формируем строку для подписи
     base = make_base(
         merchant=merchant,
         domain=domain,
@@ -124,12 +117,10 @@ async def create_invoice(
     )
     signature = hmac_md5_hex(base, secret)
 
-    # 4️⃣ URL возврата и callback
     ret_base = settings.BASE_URL.rstrip("/") + "/wfp/return"
     return_url = f"{ret_base}?token={start_token}" if start_token else ret_base
     service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
 
-    # 5️⃣ Формируем payload
     payload = {
         "transactionType": "CREATE_INVOICE",
         "merchantAccount": merchant,
@@ -147,28 +138,26 @@ async def create_invoice(
         "merchantSignature": signature,
     }
 
-    # 6️⃣ Логирование для проверки
-    log.warning("📤 WFP payload ready for send: %s", {k: v for k, v in payload.items() if k != "merchantSignature"})
-    log.warning("🔧 base string = %s", base)
-    log.warning("🔑 merchantSignature = %s", signature)
+    log.warning("📤 WFP payload ready: %s", {k: v for k, v in payload.items() if k != "merchantSignature"})
+    log.warning("🔧 base = %s", base)
+    log.warning("🔑 signature = %s", signature)
 
-    # 7️⃣ Отправка запроса
     async with httpx.AsyncClient(timeout=25) as cli:
-        r = await cli.post(WFP_API, json=payload)
-        r.raise_for_status()
-        data = r.json()
-        log.info("📥 WFP response: %s", data)
+        try:
+            r = await cli.post(WFP_API, json=payload)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            log.exception("Error creating invoice via WayForPay: %s", e)
+            raise RuntimeError(f"Cannot create invoice: {e}")
 
-    # 8️⃣ Проверяем наличие ссылки
     url = data.get("invoiceUrl") or data.get("formUrl") or data.get("url")
     if not url:
+        log.error("WayForPay response missing invoice URL: %s", data)
         raise RuntimeError(f"WayForPay error: {data.get('reasonCode')} — {data.get('reason')}")
 
-    # 9️⃣ Возвращаем URL и orderReference
     return url, order_ref
 
-
-# ---------- public API ----------
 
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     try:
@@ -196,20 +185,17 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             return
 
         async with Session() as s:
-            # Проверяем дубли
             res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
             pay = res.scalar_one_or_none()
             if pay and pay.status == "approved":
                 log.info("↩︎ Duplicate callback ignored: %s", order_ref)
                 return
 
-            # Проверяем устаревшие callback после отмены подписки
             sub = await s.get(Subscription, user_id)
             if sub and sub.updated_at and _tz_aware_utc(sub.updated_at) > order_dt:
-                log.info("⛔ Stale callback ignored (after unsubscribe): %s", order_ref)
+                log.info("⛔ Stale callback ignored: %s", order_ref)
                 return
 
-            # Сохраняем или обновляем платеж
             if pay:
                 pay.status = "approved"
                 pay.amount = amount
@@ -226,7 +212,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             await s.commit()
             log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
 
-            # Помечаем последний pending токен как paid
             res = await s.execute(
                 select(PaymentToken)
                 .where(PaymentToken.user_id == user_id, PaymentToken.status == "pending")
