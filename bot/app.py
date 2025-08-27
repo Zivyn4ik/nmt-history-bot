@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import asyncio
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
@@ -20,9 +19,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
-from bot.db import Session, Payment
+from bot.db import Session, Payment, init_db
 from bot.config import settings
-from bot.db import init_db
 from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
 from bot.handlers_wipe import router as wipe_router
@@ -32,33 +30,25 @@ from bot.payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
 
-# ---------------- Aiogram ----------------
-bot = Bot(
-    token=settings.BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
-BOT_USERNAME: str | None = None   # 🔹 здесь сохраним username
+bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+BOT_USERNAME: str | None = None
 dp = Dispatcher()
 
-# порядок важен: сперва стартовое меню, затем прочие роутеры
 dp.include_router(start_router)
 dp.include_router(handlers_router)
 dp.include_router(wipe_router)
 dp.include_router(buy_router)
 
-# ---------------- FastAPI ----------------
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global BOT_USERNAME
 
-    # --- startup ---
     await init_db()
 
-    # Безопасная установка webhook
     try:
         base = normalize_base_url(settings.BASE_URL)
         webhook_url = f"{base}/telegram/webhook"
-
         info = await bot.get_webhook_info()
         if info.url != webhook_url:
             try:
@@ -73,7 +63,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.exception("Ошибка при установке webhook: %s", e)
 
-    # 🔹 Получаем username бота (важно для ссылок с токенами)
     try:
         me = await bot.get_me()
         BOT_USERNAME = me.username
@@ -81,68 +70,53 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.exception("Не удалось получить username бота: %s", e)
 
-    # Scheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), kwargs={"bot": bot})
     scheduler.add_job(enforce_expirations, CronTrigger(hour="*/6"), kwargs={"bot": bot})
     scheduler.start()
     log.info("Scheduler запущен: подписки проверяются ежедневно и каждые 6 часов")
 
-    # --- приложение работает ---
     yield
-
-    # --- shutdown ---
     await bot.session.close()
 
 
 app = FastAPI(title="TG Subscription Bot", lifespan=lifespan)
 
-# ---------- helpers ----------
+
 def normalize_base_url(u: str) -> str:
-    """Добавляет https:// при необходимости и убирает хвостовой слэш."""
     u = (u or "").strip()
     if not urlparse(u).scheme:
         u = "https://" + u
     return u.rstrip("/")
 
-# ---------- routes ----------
+
 @app.get("/")
 async def root():
     return {"ok": True}
+
 
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
 
+
 @app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
 async def thanks_page(request: Request):
-    order_ref = (
-        request.query_params.get("orderReference")
-        or request.query_params.get("orderRef")
-    )
-
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef")
     if not order_ref:
         try:
             data = await request.json()
-            log.info("📩 Пришёл callback от WayForPay в /thanks: %s", data)
             order_ref = data.get("orderReference") or data.get("orderRef")
-        except Exception as e:
-            log.warning("⚠️ Ошибка при чтении JSON в /thanks: %s", e)
+        except Exception:
             data = {}
             order_ref = None
 
     if not order_ref:
         return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
 
-    return HTMLResponse(f"""
+    return HTMLResponse("""
     <html>
-    <head>
-        <title>Дякуємо за оплату!</title>
-        <style>
-            body {{ background-color: #111; color: #eee; font-family: sans-serif; text-align: center; padding-top: 100px; }}
-            a {{ color: #4cc9f0; font-size: 18px; }}
-        </style>
-    </head>
+    <head><title>Дякуємо за оплату!</title></head>
     <body>
         <h2>✅ Оплата пройшла успішно!</h2>
         <p>Бот щойно надіслав вам особисте посилання в Telegram 📩</p>
@@ -151,50 +125,34 @@ async def thanks_page(request: Request):
     </html>
     """)
 
+
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
-    """
-    WayForPay редиректит пользователя сюда после оплаты.
-    Теперь функция проверяет и query params, и JSON тело запроса.
-    Поддерживает оба варианта: orderReference и orderRef
-    """
     from bot.db import Payment, PaymentToken
 
-    # Логируем весь запрос
     try:
         data = await request.json()
     except Exception:
         data = {}
-    log.info("🔥 Пришёл запрос в /wfp/return: query=%s, json=%s", dict(request.query_params), data)
-
     order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef") or data.get("orderReference") or data.get("orderRef")
-    log.info("💳 Получен orderReference: %s", order_ref)
 
     if not order_ref:
         return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
 
     async with Session() as s:
-        # ищем Payment
         res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
         pay = res.scalar_one_or_none()
         if not pay:
             return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
 
-        # ищем token для этого пользователя
-        res = await s.execute(
-            select(PaymentToken)
-            .where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending")
-            .order_by(PaymentToken.created_at.desc())
-        )
+        res = await s.execute(select(PaymentToken).where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending").order_by(PaymentToken.created_at.desc()))
         token_obj = res.scalar_one_or_none()
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
 
-        # помечаем токен как оплачен
         token_obj.status = "paid"
         await s.commit()
 
-        # редирект на Telegram с токеном
         if not BOT_USERNAME:
             return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
 
@@ -216,6 +174,5 @@ async def wayforpay_callback(req: Request):
         data = await req.json()
     except Exception:
         data = {}
-    log.info("📩 Пришёл callback от WayForPay в /callback: %s", data)
     await process_callback(bot, data)
     return {"ok": True}
