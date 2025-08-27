@@ -35,16 +35,17 @@ def make_base(
     order_date: int,
     amount_str: str,
     currency: str,
-    product_name: str,
-    product_count: int = 1,
-    product_price_str: Optional[str] = None,
+    product_names: list[str],
+    product_counts: list[int],
+    product_prices: list[str],
 ) -> str:
-    if product_price_str is None:
-        product_price_str = amount_str
-    return (
-        f"{merchant};{domain};{order_ref};{order_date};"
-        f"{amount_str};{currency};{product_name};{product_count};{product_price_str}"
-    )
+    """
+    Формирует строку для merchantSignature для CREATE_INVOICE с несколькими товарами.
+    """
+    products_name_str = ";".join(product_names)
+    products_count_str = ";".join(map(str, product_counts))
+    products_price_str = ";".join(product_prices)
+    return f"{merchant};{domain};{order_ref};{order_date};{amount_str};{currency};{products_name_str};{products_count_str};{products_price_str}"
 
 # ---------- WayForPay signature ----------
 def validate_wfp_signature(data: Dict[str, Any]) -> bool:
@@ -58,12 +59,14 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
         return False
 
     try:
-        # Поддержка разных ключей для orderReference
         order_ref = data.get("orderReference") or data.get("orderRef") or ""
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
-        product_name = (data.get("productName") or [""])[0]
         order_date = int(data.get("orderDate", time.time()))
+
+        product_names = data.get("productName") or [""]
+        product_counts = data.get("productCount") or [1]
+        product_prices = data.get("productPrice") or [amount]
 
         base = make_base(
             merchant=settings.WFP_MERCHANT.strip(),
@@ -72,10 +75,11 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
             order_date=order_date,
             amount_str=amount,
             currency=currency,
-            product_name=product_name,
-            product_count=1,
-            product_price_str=amount,
+            product_names=product_names,
+            product_counts=product_counts,
+            product_prices=product_prices
         )
+
         expected_sig = hmac_md5_hex(base, settings.WFP_SECRET.strip())
         if expected_sig != signature_from_wfp:
             log.warning("Invalid merchantSignature. Expected %s, got %s", expected_sig, signature_from_wfp)
@@ -101,10 +105,16 @@ async def create_invoice(
     secret = settings.WFP_SECRET.strip()
 
     amt = money2(amount)
-    base = make_base(merchant, domain, order_ref, order_date, amt, currency, product_name, 1, amt)
+
+    # ✅ исправлено: создаём списки для поддержки нескольких товаров
+    product_names = [product_name]
+    product_counts = [1]
+    product_prices = [amt]
+
+    base = make_base(merchant, domain, order_ref, order_date, amt, currency,
+                     product_names, product_counts, product_prices)
     signature = hmac_md5_hex(base, secret)
 
-    # ⬇️ возвращаем пользователя в ваш бекенд с токеном, чтобы затем уйти в t.me/<bot>?start=<token>
     ret_base = settings.BASE_URL.rstrip("/") + "/wfp/return"
     return_url = f"{ret_base}?token={start_token}" if start_token else ret_base
     service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
@@ -118,9 +128,9 @@ async def create_invoice(
         "orderDate": order_date,
         "amount": amt,
         "currency": currency,
-        "productName": [product_name],
-        "productPrice": [amt],
-        "productCount": [1],
+        "productName": product_names,
+        "productPrice": product_prices,
+        "productCount": product_counts,
         "returnUrl": return_url,
         "serviceUrl": service_url,
         "merchantSignature": signature,
@@ -159,12 +169,10 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
         currency = str(data.get("currency") or "")
         log.info("✅ WFP callback received: %s %s", status, order_ref)
 
-        # only approved payments for our auto-created order refs
         if not (status in ("approved", "accept", "success") and order_ref.startswith("sub-")):
             log.info("Ignored WFP callback: status=%s order_ref=%s", status, order_ref)
             return
 
-        # parse user_id and timestamp from order_ref (format sub-<user>-<ts>-...)
         try:
             _, uid_str, ts_str, *_ = order_ref.split("-")
             user_id = int(uid_str)
@@ -174,7 +182,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             log.info("🚫 Cannot parse order_ref: %s", order_ref)
             return
 
-        # check duplicate payment
         async with Session() as s:
             res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
             pay = res.scalar_one_or_none()
@@ -182,14 +189,12 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
                 log.info("↩︎ Duplicate callback ignored: %s", order_ref)
                 return
 
-        # check stale callback after unsubscribe
         async with Session() as s:
             sub = await s.get(Subscription, user_id)
             if sub and sub.updated_at and _tz_aware_utc(sub.updated_at) > order_dt:
                 log.info("⛔ Stale callback ignored (after unsubscribe): %s", order_ref)
                 return
 
-        # record or update payment
         async with Session() as s:
             if pay:
                 pay.status = "approved"
@@ -207,7 +212,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             await s.commit()
             log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
 
-        # ✅ Переводим ПОСЛЕДНИЙ pending-токен этого пользователя в paid
         async with Session() as s:
             res = await s.execute(
                 select(PaymentToken)
@@ -219,8 +223,6 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
                 token_obj.status = "paid"
                 await s.commit()
                 log.info("💎 Token marked as PAID for user %s: %s", user_id, token_obj.token)
-
-        # ⛔ Специальных сообщений тут не шлём — весь поток завершится через /start <token>
 
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
