@@ -81,8 +81,8 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
     except Exception:
         log.exception("Error verifying callback signature: %s", data)
         return False
+        
 
-# ---------- public API ----------
 async def create_invoice(
     user_id: int,
     amount: float,
@@ -90,27 +90,46 @@ async def create_invoice(
     product_name: str = "Access to course (1 month)",
     start_token: str | None = None,
 ) -> tuple[str, str]:
+    """
+    Создает счет в WayForPay.
+    Возвращает кортеж: (ссылка на оплату, orderReference).
+    Гарантирует, что orderReference всегда передается корректно.
+    """
+    # 1️⃣ Генерация уникального orderReference
     order_date = int(time.time())
     order_ref = f"sub-{user_id}-{order_date}-{uuid.uuid4().hex[:6]}"
+    order_ref = str(order_ref)  # на всякий случай приводим к строке
 
     merchant = settings.WFP_MERCHANT.strip()
     domain = settings.WFP_DOMAIN.strip()
     secret = settings.WFP_SECRET.strip()
-
     amt = money2(amount)
 
+    # 2️⃣ Формируем списки товаров
     product_names = [product_name]
     product_counts = [1]
     product_prices = [amt]
 
-    base = make_base(merchant, domain, order_ref, order_date, amt, currency,
-                     product_names, product_counts, product_prices)
+    # 3️⃣ Формируем строку для подписи
+    base = make_base(
+        merchant=merchant,
+        domain=domain,
+        order_ref=order_ref,
+        order_date=order_date,
+        amount_str=amt,
+        currency=currency,
+        product_names=product_names,
+        product_counts=product_counts,
+        product_prices=product_prices,
+    )
     signature = hmac_md5_hex(base, secret)
 
+    # 4️⃣ URL возврата и callback
     ret_base = settings.BASE_URL.rstrip("/") + "/wfp/return"
     return_url = f"{ret_base}?token={start_token}" if start_token else ret_base
     service_url = settings.BASE_URL.rstrip("/") + "/payments/wayforpay/callback"
 
+    # 5️⃣ Формируем payload
     payload = {
         "transactionType": "CREATE_INVOICE",
         "merchantAccount": merchant,
@@ -128,21 +147,28 @@ async def create_invoice(
         "merchantSignature": signature,
     }
 
-    log.warning("📤 WFP payload: %s", {k: v for k, v in payload.items() if k != "merchantSignature"})
-    log.warning("🔧 base = %s", base)
-    log.warning("🔑 signature = %s", signature)
+    # 6️⃣ Логирование для проверки
+    log.warning("📤 WFP payload ready for send: %s", {k: v for k, v in payload.items() if k != "merchantSignature"})
+    log.warning("🔧 base string = %s", base)
+    log.warning("🔑 merchantSignature = %s", signature)
 
+    # 7️⃣ Отправка запроса
     async with httpx.AsyncClient(timeout=25) as cli:
         r = await cli.post(WFP_API, json=payload)
         r.raise_for_status()
         data = r.json()
         log.info("📥 WFP response: %s", data)
 
+    # 8️⃣ Проверяем наличие ссылки
     url = data.get("invoiceUrl") or data.get("formUrl") or data.get("url")
     if not url:
         raise RuntimeError(f"WayForPay error: {data.get('reasonCode')} — {data.get('reason')}")
-    
+
+    # 9️⃣ Возвращаем URL и orderReference
     return url, order_ref
+
+
+# ---------- public API ----------
 
 async def process_callback(bot, data: Dict[str, Any]) -> None:
     try:
@@ -214,3 +240,4 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
 
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
+
