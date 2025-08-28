@@ -117,11 +117,6 @@ async def thanks_page(request: Request):
 
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
-    """
-    Новый flow:
-    После оплаты перенаправляет в бота с start_param=токен.
-    Проверка статуса оплаты делается внутри бота через polling.
-    """
     token_param = request.query_params.get("token")
     try:
         data = await request.json()
@@ -132,28 +127,12 @@ async def wfp_return(request: Request):
     if not token_param:
         return HTMLResponse("<h2>❌ Не передан token</h2>", status_code=400)
 
-    async with Session() as s:
-        res = await s.execute(
-            select(PaymentToken)
-            .where(PaymentToken.token == token_param)
-            .order_by(PaymentToken.created_at.desc())
-        )
-        token_obj = res.scalar_one_or_none()
+    # Редирект в бота с token для проверки платежа
+    if not BOT_USERNAME:
+        return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
 
-        if not token_obj:
-            return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
-
-        # Проверка на устаревший токен (24 часа)
-        if token_obj.created_at < datetime.utcnow() - timedelta(hours=24):
-            return HTMLResponse("<h2>❌ Токен устарел</h2>", status_code=400)
-
-        # Отмечаем токен как использованный для редиректа
-        token_obj.used = True
-        await s.commit()
-
-        # Редирект в бот с start_param
-        invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
-        return RedirectResponse(invite_url)
+    invite_url = f"https://t.me/{BOT_USERNAME}?start={token_param}"
+    return RedirectResponse(invite_url)
 
 
 @app.post("/telegram/webhook")
