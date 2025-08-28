@@ -3,7 +3,7 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     BOT_TOKEN: str = Field(...)
-    CHANNEL_ID: int = Field(...)
+    CHANNEL_ID: int = Field(...)  # ID канала (-100…)
     BASE_URL: str = Field(...)
     WFP_MERCHANT: str = Field(...)
     WFP_SECRET: str = Field(...)
