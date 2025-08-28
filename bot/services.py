@@ -4,14 +4,11 @@ from datetime import datetime, timedelta, timezone, date
 from typing import Optional
 import logging
 from aiogram import Bot
-from aiogram.enums.chat_member_status import ChatMemberStatus
 from sqlalchemy import select, update
 from bot.db import Session, User, Subscription
-from bot.config import settings
 
 log = logging.getLogger(__name__)
 UTC = timezone.utc
-
 now = lambda: datetime.now(UTC)
 
 @dataclass
@@ -20,7 +17,6 @@ class SubInfo:
     paid_until: Optional[datetime]
 
 async def ensure_user(tg_user) -> None:
-    """Создаёт пользователя, если его ещё нет."""
     async with Session() as s:
         obj = await s.get(User, tg_user.id)
         if obj:
@@ -77,4 +73,7 @@ async def enforce_expirations(bot: Bot):
         res = await s.execute(select(Subscription))
         subs = res.scalars().all()
         for sub in subs:
-            paid_until = _tz_aware_utc(sub
+            paid_until = _tz_aware_utc(sub.paid_until)
+            if paid_until and paid_until < moment:
+                sub.status = "expired"
+        await s.commit()
