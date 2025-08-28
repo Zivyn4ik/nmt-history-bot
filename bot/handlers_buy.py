@@ -16,14 +16,10 @@ log = logging.getLogger("handlers.buy")
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message, bot: Bot):
-    """
-    Создаёт одноразовый токен, Payment объект и инвойс WayForPay.
-    После успешной оплаты токен обновляется, а пользователь редиректится в Telegram.
-    """
     user_id = message.from_user.id
+    token = uuid.uuid4().hex
 
     # 1️⃣ Создаём новый pending-токен
-    token = uuid.uuid4().hex
     try:
         async with Session() as session:
             session.add(PaymentToken(user_id=user_id, token=token, status="pending"))
@@ -34,17 +30,16 @@ async def cmd_buy(message: Message, bot: Bot):
         await message.answer("Не вдалося підготувати оплату. Спробуйте ще раз.")
         return
 
-    # 2️⃣ Создаём инвойс WayForPay и создаём запись Payment
+    # 2️⃣ Создаём инвойс WayForPay и Payment
     try:
         url, order_ref = await create_invoice(
             user_id=user_id,
             amount=settings.PRICE,
             currency=settings.CURRENCY,
             product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription (1 month)"),
-            start_token=token,  # передаём token, чтобы WFP редиректнул на /wfp/return?token=...
+            start_token=token,
         )
 
-        # Сохраняем order_ref в таблицу Payment (status = created)
         async with Session() as session:
             session.add(Payment(
                 user_id=user_id,
@@ -59,7 +54,6 @@ async def cmd_buy(message: Message, bot: Bot):
         await message.answer("Не вдалося сформувати рахунок. Спробуйте ще раз пізніше.")
         return
 
-    # 3️⃣ Отправляем кнопку "Оплатити"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="Оплатити", url=url)]]
     )
