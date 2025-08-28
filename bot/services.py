@@ -1,14 +1,21 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import logging
 
 from aiogram import Bot
+from aiogram.enums.chat_member_status import ChatMemberStatus
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
 
-from config import settings
-from db import User
+from bot.config import settings
+from bot.db import Session, User, Subscription
 
-# Везде UTC в БД, чтобы не путаться; при выводе — локальная логика не нужна здесь.
+log = logging.getLogger(__name__)
 UTC = timezone.utc
+now = lambda: datetime.now(UTC)
 
 async def activate_subscription(bot: Bot, session: AsyncSession, user: User) -> str:
     now = datetime.now(tz=UTC).replace(tzinfo=None)
@@ -42,3 +49,4 @@ def remaining_days(user: User) -> Optional[int]:
     now = datetime.utcnow()
     diff = user.end_date - now
     return max(0, diff.days)
+
