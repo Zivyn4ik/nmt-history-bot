@@ -1,6 +1,7 @@
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
-from bot.services import ensure_user, has_active_access, activate_or_extend
+from aiogram import Router
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import CommandStart
+from bot.services import ensure_user
 from bot.config import settings
 
 router = Router()
@@ -26,8 +27,5 @@ def main_kb() -> ReplyKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    async with async_session_maker() as session:
-        await get_or_create_user(session, message.from_user.id)
+    await ensure_user(message.from_user)
     await message.answer(WELCOME, reply_markup=main_kb())
-
-
