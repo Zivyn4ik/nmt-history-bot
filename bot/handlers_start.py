@@ -1,8 +1,17 @@
-from aiogram import Router, F
+from __future__ import annotations
+
+from aiogram import Router, F, Bot
 from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import CommandStart
+from sqlalchemy import select
+from datetime import datetime, timezone
 
-from db import async_session_maker, get_or_create_user
+
+from bot.config import settings
+from bot.services import ensure_user, get_subscription_status, activate_or_extend
+from bot.db import Session, PaymentToken, async_session_maker, get_or_create_user
+
+import asyncio
 
 router = Router(name="start")
 
@@ -31,3 +40,4 @@ async def cmd_start(message: Message):
     async with async_session_maker() as session:
         await get_or_create_user(session, message.from_user.id)
     await message.answer(WELCOME, reply_markup=main_kb())
+
