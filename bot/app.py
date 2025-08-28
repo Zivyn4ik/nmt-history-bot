@@ -1,20 +1,45 @@
 from __future__ import annotations
 
+
 import logging
+import asyncio
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse 
+from starlette.responses import JSONResponse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import Update
+from aiogram.exceptions import TelegramRetryAfter
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
 
 import sys
+from bot.db import Session, PaymentToken, init_db 
+from bot.config import settings 
+from bot.handlers_start import router as start_router
+from bot.handlers import router as handlers_router
+from bot.handlers_wipe import router as wipe_router
+from bot.handlers_buy import router as buy_router
+from bot.services import enforce_expirations, activate_or_extend 
+from bot.payments.wayforpay import process_callback 
+
+log = logging.getLogger("app") 
+bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+BOT_USERNAME: str | None = None dp = Dispatcher() 
+
+dp.include_router(start_router)
+dp.include_router(handlers_router)
+dp.include_router(wipe_router) 
+dp.include_router(buy_router)
 
 bot: Optional[Bot] = None
 dp: Optional[Dispatcher] = None
@@ -78,4 +103,5 @@ async def wfp_return(request: Request):
     </html>
     """
     return HTMLResponse(content=html, status_code=200)
+
 
