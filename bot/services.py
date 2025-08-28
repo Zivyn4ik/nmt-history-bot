@@ -1,10 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timezone, date
 from typing import Optional
 import logging
-from aiogram import Bot
 from sqlalchemy import select, update
+from aiogram import Bot
 from bot.db import Session, User, Subscription
 
 log = logging.getLogger(__name__)
@@ -45,12 +45,9 @@ async def get_subscription_status(user_id: int) -> SubInfo:
         return SubInfo(status=sub.status, paid_until=_tz_aware_utc(sub.paid_until))
 
 async def update_subscription(user_id: int, **fields) -> None:
-    if "paid_until" in fields:
-        fields["paid_until"] = _tz_aware_utc(fields["paid_until"])
-    if "grace_until" in fields:
-        fields["grace_until"] = _tz_aware_utc(fields["grace_until"])
-    if "updated_at" in fields:
-        fields["updated_at"] = _tz_aware_utc(fields["updated_at"])
+    for key in ["paid_until", "grace_until", "updated_at"]:
+        if key in fields:
+            fields[key] = _tz_aware_utc(fields[key])
     async with Session() as s:
         await s.execute(update(Subscription).where(Subscription.user_id == user_id).values(**fields))
         await s.commit()
@@ -67,7 +64,6 @@ async def has_active_access(user_id: int) -> bool:
         return now() <= (grace_until or paid_until)
 
 async def enforce_expirations(bot: Bot):
-    today = date.today()
     moment = now()
     async with Session() as s:
         res = await s.execute(select(Subscription))
