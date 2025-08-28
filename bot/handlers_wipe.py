@@ -1,7 +1,6 @@
 from __future__ import annotations
 import logging
-from aiogram import Router, Bot
-from aiogram.types import Message
+from aiogram import Router, Message
 from aiogram.filters import Command
 from bot.db import Session, User, Subscription, Payment, PaymentToken
 from bot.services import ensure_user
