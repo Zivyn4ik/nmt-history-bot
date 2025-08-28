@@ -1,58 +1,30 @@
-from __future__ import annotations
-from datetime import datetime, timezone, date
-from typing import Optional
-from sqlalchemy import Float, String, BigInteger, DateTime, Date, Integer, ForeignKey
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from bot.config import settings
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import Column, Integer, String
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
-Session = async_sessionmaker(engine, expire_on_commit=False)
+DATABASE_URL = "sqlite+aiosqlite:///./db.sqlite3"
 
-class Base(DeclarativeBase):
-    pass
+engine = create_async_engine(DATABASE_URL, echo=True)
+async_sessionmaker = sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
-    subscription: Mapped["Subscription"] = relationship(
-        "Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan"
-    )
 
-class Subscription(Base):
-    __tablename__ = "subscriptions"
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    status: Mapped[str] = mapped_column(String(16), default="expired")
-    paid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    grace_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_reminded_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-    user: Mapped["User"] = relationship("User", back_populates="subscription")
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    balance = Column(Integer, default=0)
 
-class Payment(Base):
-    __tablename__ = "payments"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger)
-    order_ref: Mapped[str] = mapped_column(String(128), unique=True)
-    amount: Mapped[float] = mapped_column(Float)
-    currency: Mapped[str] = mapped_column(String(8))
-    status: Mapped[str] = mapped_column(String(16))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-class PaymentToken(Base):
-    __tablename__ = "payment_tokens"
-    token: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger)
-    status: Mapped[str] = mapped_column(String(16), default="pending")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def get_or_create_user(session: AsyncSession, user_id: int, username: str = None):
+    user = await session.get(User, user_id)
+    if not user:
+        user = User(id=user_id, username=username or f"user{user_id}")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+    return user
