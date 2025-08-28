@@ -17,8 +17,12 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    subscription: Mapped["Subscription"] = relationship("Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    subscription: Mapped["Subscription"] = relationship(
+        "Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
@@ -27,7 +31,11 @@ class Subscription(Base):
     paid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     grace_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_reminded_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
     user: Mapped["User"] = relationship("User", back_populates="subscription")
 
 class Payment(Base):
@@ -38,7 +46,9 @@ class Payment(Base):
     amount: Mapped[float] = mapped_column(Float)
     currency: Mapped[str] = mapped_column(String(8))
     status: Mapped[str] = mapped_column(String(16))  # created | approved | declined | refunded
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 class PaymentToken(Base):
     __tablename__ = "payment_tokens"
@@ -48,5 +58,6 @@ class PaymentToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 async def init_db():
+    """Инициализация БД и создание таблиц"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
