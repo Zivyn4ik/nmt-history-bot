@@ -115,7 +115,6 @@ async def thanks_page(request: Request):
     </html>
     """)
 
-
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
     token_param = request.query_params.get("token")
@@ -130,48 +129,39 @@ async def wfp_return(request: Request):
 
     async with Session() as s:
         res = await s.execute(
-            select(PaymentToken)
-            .where(PaymentToken.token == token_param)
-            .order_by(PaymentToken.created_at.desc())
+            select(PaymentToken).where(PaymentToken.token == token_param)
         )
         token_obj = res.scalar_one_or_none()
-
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
 
-    # Редиректим в бота с запуском проверки оплаты
     invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
     asyncio.create_task(wait_for_payment(token_obj.user_id, token_obj.token))
     return RedirectResponse(invite_url)
 
 
 async def wait_for_payment(user_id: int, token: str, timeout: int = 35):
-    """Проверка оплаты каждые 1 секунду и выдача приглашения на канал после успешной оплаты."""
     async with Session() as s:
         try:
-            msg: Message = await bot.send_message(user_id, "⏳ Генерируем приглашение…")
+            msg = await bot.send_message(user_id, "⏳ Генерируем приглашение…")
         except Exception:
             msg = None
 
         start_time = datetime.utcnow()
         while (datetime.utcnow() - start_time).total_seconds() < timeout:
-            res = await s.execute(
-                select(PaymentToken)
-                .where(PaymentToken.token == token)
-            )
+            res = await s.execute(select(PaymentToken).where(PaymentToken.token == token))
             token_obj = res.scalar_one_or_none()
             if token_obj and token_obj.status == "paid":
                 token_obj.used = True
                 await s.commit()
-                await activate_or_extend(bot, user_id)
                 if msg:
                     await msg.delete()
+                await activate_or_extend(bot, user_id)
                 return
             await asyncio.sleep(1)
 
         if msg:
             await msg.edit_text("❌ Оплата не подтвердилась за 35 секунд. Попробуйте позже.")
-
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
@@ -189,3 +179,4 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
