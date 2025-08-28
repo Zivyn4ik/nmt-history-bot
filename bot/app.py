@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
@@ -19,7 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
-from bot.db import Session, Payment, PaymentToken, init_db
+from bot.db import Session, PaymentToken, init_db
 from bot.config import settings
 from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
@@ -113,11 +114,9 @@ async def thanks_page(request: Request):
     </html>
     """)
 
+
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
-    from bot.db import PaymentToken
-
-    # Получаем token из query параметра или из тела запроса
     token_param = request.query_params.get("token")
     try:
         data = await request.json()
@@ -129,7 +128,6 @@ async def wfp_return(request: Request):
         return HTMLResponse("<h2>❌ Не передан token</h2>", status_code=400)
 
     async with Session() as s:
-        # Ищем токен вне зависимости от статуса
         res = await s.execute(
             select(PaymentToken)
             .where(PaymentToken.token == token_param)
@@ -140,11 +138,33 @@ async def wfp_return(request: Request):
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
 
-        if token_obj.status != "paid":
-            return HTMLResponse("<h2>⏳ Оплата ещё не подтверждена</h2>", status_code=400)
+        # Проверка на устаревший токен (24 часа)
+        if token_obj.created_at < datetime.utcnow() - timedelta(hours=24):
+            return HTMLResponse("<h2>❌ Токен устарел</h2>", status_code=400)
+
+        if token_obj.used:
+            return HTMLResponse("<h2>❌ Токен уже использован</h2>", status_code=400)
 
         if not BOT_USERNAME:
             return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
+
+        # Если оплата ещё не подтверждена
+        if token_obj.status != "paid":
+            html_content = f"""
+            <html>
+            <head><title>Оплата не подтверждена</title></head>
+            <body>
+                <h2>⏳ Оплата ещё не подтверждена</h2>
+                <p>Ваш токен: {token_obj.token}</p>
+                <p>Попробуйте обновить страницу через несколько секунд.</p>
+            </body>
+            </html>
+            """
+            return HTMLResponse(html_content, status_code=400)
+
+        # Отмечаем токен как использованный
+        token_obj.used = True
+        await s.commit()
 
         invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
         return RedirectResponse(invite_url)
@@ -166,4 +186,3 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
-
