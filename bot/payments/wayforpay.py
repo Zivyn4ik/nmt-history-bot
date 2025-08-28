@@ -1,16 +1,26 @@
+from __future__ import annotations
+
+import uuid
 import hashlib
 import hmac
 import time
-from typing import Any, Dict, Tuple
-
+import logging from decimal
+import Decimal, ROUND_HALF_UP from typing
+import Dict, Any from datetime
+import datetime, timezone
+import httpx from sqlalchemy
+import select
 import aiohttp
 
-from config import settings
 
-# Строка для подписи формируется строго по документации WFP.
-# Для CREATE_INVOICE: 
-# merchantAccount;merchantDomainName;orderReference;orderDate;amount;currency;
-# productName[0..n];productCount[0..n];productPrice[0..n]
+from typing import Any, Dict, Tuple
+
+from bot.config import settings
+from bot.services import _tz_aware_utc, activate_or_extend
+from bot.db import Session, Subscription, Payment, PaymentToken
+
+log = logging.getLogger("bot.payments") WFP_API = "https://api.wayforpay.com/api"
+
 def _sign_create_invoice(payload: Dict[str, Any]) -> str:
     parts = [
         payload["merchantAccount"],
@@ -82,3 +92,4 @@ async def check_status(order_reference: str) -> Dict[str, Any]:
     async with aiohttp.ClientSession() as session:
         async with session.post(settings.service_url, json=payload, timeout=20) as resp:
             return await resp.json()
+
