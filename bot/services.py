@@ -1,4 +1,3 @@
-# services.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,12 +16,10 @@ log = logging.getLogger(__name__)
 UTC = timezone.utc
 now = lambda: datetime.now(UTC)
 
-
 @dataclass
 class SubInfo:
     status: str
     paid_until: Optional[datetime]
-
 
 async def ensure_user(tg_user) -> None:
     async with Session() as s:
@@ -36,14 +33,12 @@ async def ensure_user(tg_user) -> None:
             s.add(Subscription(user_id=tg_user.id, status="expired"))
             await s.commit()
 
-
 def _tz_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
-
 
 async def get_subscription_status(user_id: int) -> SubInfo:
     async with Session() as s:
@@ -54,32 +49,24 @@ async def get_subscription_status(user_id: int) -> SubInfo:
             await s.commit()
         return SubInfo(status=sub.status, paid_until=_tz_aware_utc(sub.paid_until))
 
-
 async def update_subscription(user_id: int, **fields) -> None:
-    for k in ["paid_until", "grace_until", "updated_at", "last_reminded_on"]:
+    for k in ["paid_until", "grace_until", "updated_at"]:
         if k in fields:
             fields[k] = _tz_aware_utc(fields[k])
-
     async with Session() as s:
-        await s.execute(
-            update(Subscription).where(Subscription.user_id == user_id).values(**fields)
-        )
+        await s.execute(update(Subscription).where(Subscription.user_id == user_id).values(**fields))
         await s.commit()
-
 
 async def has_active_access(user_id: int) -> bool:
     async with Session() as s:
         sub = await s.get(Subscription, user_id)
         if not sub or sub.status not in {"active", "grace"}:
             return False
-
         paid_until = _tz_aware_utc(sub.paid_until)
         grace_until = _tz_aware_utc(sub.grace_until)
         if not paid_until:
             return False
-
         return now() <= (grace_until or paid_until)
-
 
 async def is_member_of_channel(bot: Bot, channel_id: int, user_id: int) -> bool:
     try:
@@ -88,9 +75,8 @@ async def is_member_of_channel(bot: Bot, channel_id: int, user_id: int) -> bool:
     except Exception:
         return False
 
-
 async def create_join_request_link(bot: Bot, user_id: int) -> str:
-    expire_ts = int(now().timestamp()) + 3 * 24 * 60 * 60
+    expire_ts = int(now().timestamp()) + 3*24*60*60
     link_obj = await bot.create_chat_invite_link(
         chat_id=settings.CHANNEL_ID,
         name=f"joinreq-{user_id}-{int(now().timestamp())}",
@@ -99,7 +85,6 @@ async def create_join_request_link(bot: Bot, user_id: int) -> str:
         creates_join_request=True,
     )
     return link_obj.invite_link
-
 
 async def activate_or_extend(bot: Bot, user_id: int) -> None:
     async with Session() as s:
@@ -115,7 +100,6 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
             base = current
 
         new_until = base + timedelta(days=30)
-
         sub.status = "active"
         sub.paid_until = _tz_aware_utc(new_until)
         sub.grace_until = _tz_aware_utc(new_until + timedelta(days=3))
@@ -137,7 +121,6 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
         )
     except Exception as e:
         log.warning("Cannot send subscription message to user %s: %s", user_id, e)
-
 
 async def enforce_expirations(bot: Bot) -> None:
     today = date.today()
@@ -176,7 +159,6 @@ async def enforce_expirations(bot: Bot) -> None:
     try:
         members = await bot.get_chat_administrators(settings.CHANNEL_ID)
         admins = {m.user.id for m in members}
-
         for sub in subs:
             if sub.user_id in admins:
                 continue
