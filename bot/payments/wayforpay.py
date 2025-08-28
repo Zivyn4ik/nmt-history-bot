@@ -13,7 +13,7 @@ import httpx
 from sqlalchemy import select
 
 from bot.config import settings
-from bot.services import _tz_aware_utc
+from bot.services import _tz_aware_utc, activate_or_extend
 from bot.db import Session, Subscription, Payment, PaymentToken
 
 log = logging.getLogger("bot.payments")
@@ -56,12 +56,8 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
 
-        # orderDate обязательно должен быть в колбэке
-        order_date_raw = data.get("orderDate")
-        if not order_date_raw:
-            log.warning("Callback missing orderDate: %s", data)
-            return False
-        order_date = int(order_date_raw)
+        order_date_raw = data.get("orderDate")  # не обязательно теперь
+        order_date = int(order_date_raw) if order_date_raw else int(time.time())
 
         # гарантируем, что это всегда списки
         def ensure_list(val):
@@ -185,81 +181,33 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
 
         status = (data.get("transactionStatus") or data.get("status") or "").lower()
         order_ref = str(data.get("orderReference") or "")
-        amount = str(data.get("amount") or "0")
-        currency = str(data.get("currency") or "")
         log.info("✅ WFP callback received: %s %s", status, order_ref)
 
-        # Если orderReference пустой, ищем заказ по сумме/валюте и статусу pending
-        if not order_ref:
-            log.warning("⚠️ Callback без orderReference, ищем по сумме/валюте: %s", data)
-            async with Session() as s:
-                res = await s.execute(
-                    select(Payment)
-                    .where(Payment.amount == float(amount))
-                    .where(Payment.currency == currency)
-                    .where(Payment.status == "pending")
-                    .order_by(Payment.created_at.desc())
-                )
-                pay = res.scalar_one_or_none()
-                if pay:
-                    order_ref = pay.order_ref
-                    log.info("🔄 Привязали пустой callback к заказу %s", order_ref)
-                else:
-                    log.error("🚫 Не нашли заказ для пустого orderReference")
-                    return
-
-        if not (status in ("approved", "accept", "success") and order_ref.startswith("sub-")):
+        if status not in ("approved", "accept", "success"):
             log.info("Ignored WFP callback: status=%s order_ref=%s", status, order_ref)
             return
 
-        try:
-            _, uid_str, ts_str, *_ = order_ref.split("-")
-            user_id = int(uid_str)
-            order_ts = int(ts_str)
-            order_dt = datetime.fromtimestamp(order_ts, tz=timezone.utc)
-        except Exception:
-            log.info("🚫 Cannot parse order_ref: %s", order_ref)
-            return
-
         async with Session() as s:
-            res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-            pay = res.scalar_one_or_none()
-            if pay and pay.status == "approved":
-                log.info("↩︎ Duplicate callback ignored: %s", order_ref)
-                return
-
-            sub = await s.get(Subscription, user_id)
-            if sub and sub.updated_at and _tz_aware_utc(sub.updated_at) > order_dt:
-                log.info("⛔ Stale callback ignored: %s", order_ref)
-                return
-
-            if pay:
-                pay.status = "approved"
-                pay.amount = amount
-                pay.currency = currency
-            else:
-                pay = Payment(
-                    user_id=user_id,
-                    order_ref=order_ref,
-                    amount=float(amount) if amount else 0.0,
-                    currency=currency,
-                    status="approved",
-                )
-                s.add(pay)
-            await s.commit()
-            log.info("💰 Payment recorded: user=%s order_ref=%s", user_id, order_ref)
-
+            # Находим последний pending токен для пользователя
             res = await s.execute(
                 select(PaymentToken)
-                .where(PaymentToken.user_id == user_id, PaymentToken.status == "pending")
+                .where(PaymentToken.status == "pending")
                 .order_by(PaymentToken.created_at.desc())
             )
             token_obj = res.scalars().first()
-            if token_obj:
-                token_obj.status = "paid"
-                await s.commit()
-                log.info("💎 Token marked as PAID for user %s: %s", user_id, token_obj.token)
+            if not token_obj:
+                log.warning("⚠️ No pending token found for callback: %s", data)
+                return
+
+            user_id = token_obj.user_id
+
+            # Обновляем PaymentToken в статус paid
+            token_obj.status = "paid"
+            await s.commit()
+            log.info("💎 Token marked as PAID for user %s: %s", user_id, token_obj.token)
+
+        # Активируем подписку и выдаём доступ пользователю
+        await activate_or_extend(bot, user_id)
 
     except Exception:
         log.exception("Unhandled error in WFP callback handler")
-
