@@ -31,19 +31,18 @@ async def start_handler(message: Message):
     user = message.from_user
     await ensure_user(user)
 
-    # проверяем, пришёл ли токен через start parameter
     token = getattr(message, "start_param", None)
     if token:
         async with Session() as s:
             res = await s.execute(
                 select(PaymentToken).where(
                     PaymentToken.token == token,
-                    PaymentToken.status == "pending"
+                    PaymentToken.status == "paid"
                 )
             )
             token_obj = res.scalar_one_or_none()
-            if token_obj:
-                token_obj.status = "used"
+            if token_obj and not token_obj.used:
+                token_obj.used = True
                 await s.commit()
 
                 invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user.id}"
@@ -61,6 +60,7 @@ async def start_handler(message: Message):
         "🧭 Скористайтесь кнопками нижче."
     )
     await message.answer(text, reply_markup=_main_menu_kb())
+
 
 # --- Callbacks ---
 @router.callback_query(F.data == "buy")
