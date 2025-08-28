@@ -1,3 +1,4 @@
+# app.py
 from __future__ import annotations
 
 import logging
@@ -152,7 +153,6 @@ async def wfp_return(request: Request):
         return RedirectResponse(invite_url)
 
 
-# Проверка статуса оплаты через бота
 async def wait_for_payment(user_id: int, token: str, timeout: int = 30):
     async with Session() as s:
         start_time = datetime.utcnow()
