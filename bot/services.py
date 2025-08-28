@@ -1,3 +1,4 @@
+# services.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ now = lambda: datetime.now(UTC)
 @dataclass
 class SubInfo:
     status: str
-    paid_until: datetime | None
+    paid_until: Optional[datetime]
 
 
 async def ensure_user(tg_user) -> None:
@@ -55,7 +56,7 @@ async def get_subscription_status(user_id: int) -> SubInfo:
 
 
 async def update_subscription(user_id: int, **fields) -> None:
-    for k in ["paid_until", "grace_until", "updated_at"]:
+    for k in ["paid_until", "grace_until", "updated_at", "last_reminded_on"]:
         if k in fields:
             fields[k] = _tz_aware_utc(fields[k])
 
