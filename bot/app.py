@@ -1,15 +1,20 @@
+from __future__ import annotations
+
+import logging
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from starlette.responses import JSONResponse, HTMLResponse
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import Update
 
-from config import settings
-from db import init_db
-from .handlers import router as root_router
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+import sys
 
 bot: Optional[Bot] = None
 dp: Optional[Dispatcher] = None
@@ -73,3 +78,4 @@ async def wfp_return(request: Request):
     </html>
     """
     return HTMLResponse(content=html, status_code=200)
+
