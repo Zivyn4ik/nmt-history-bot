@@ -52,15 +52,28 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
         return False
 
     try:
-        order_ref = data.get("orderReference") or data.get("orderRef") or ""
+        order_ref = str(data.get("orderReference") or data.get("orderRef") or "")
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
-        order_date = int(data.get("orderDate", time.time()))
 
-        product_names = data.get("productName") or [""]
+        # orderDate обязательно должен быть в колбэке
+        order_date_raw = data.get("orderDate")
+        if not order_date_raw:
+            log.warning("Callback missing orderDate: %s", data)
+            return False
+        order_date = int(order_date_raw)
 
-        product_counts = data.get("productCount") or [1]
-        product_prices = data.get("productPrice") or [amount]
+        # гарантируем, что это всегда списки
+        def ensure_list(val):
+            if isinstance(val, list):
+                return val
+            if val is None:
+                return []
+            return [val]
+
+        product_names = ensure_list(data.get("productName"))
+        product_counts = ensure_list(data.get("productCount"))
+        product_prices = ensure_list(data.get("productPrice"))
 
         base = make_base(
             merchant=settings.WFP_MERCHANT.strip(),
@@ -71,14 +84,19 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
             currency=currency,
             product_names=product_names,
             product_counts=product_counts,
-            product_prices=product_prices
+            product_prices=product_prices,
         )
 
         expected_sig = hmac_md5_hex(base, settings.WFP_SECRET.strip())
         if expected_sig != signature_from_wfp:
-            log.warning("Invalid merchantSignature. Expected %s, got %s", expected_sig, signature_from_wfp)
+            log.warning(
+                "Invalid merchantSignature. Expected=%s, got=%s, base=%s",
+                expected_sig, signature_from_wfp, base
+            )
             return False
+
         return True
+
     except Exception:
         log.exception("Error verifying callback signature: %s", data)
         return False
@@ -166,10 +184,29 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             return
 
         status = (data.get("transactionStatus") or data.get("status") or "").lower()
-        order_ref = data.get("orderReference", "")
+        order_ref = str(data.get("orderReference") or "")
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
         log.info("✅ WFP callback received: %s %s", status, order_ref)
+
+        # Если orderReference пустой, ищем заказ по сумме/валюте и статусу pending
+        if not order_ref:
+            log.warning("⚠️ Callback без orderReference, ищем по сумме/валюте: %s", data)
+            async with Session() as s:
+                res = await s.execute(
+                    select(Payment)
+                    .where(Payment.amount == float(amount))
+                    .where(Payment.currency == currency)
+                    .where(Payment.status == "pending")
+                    .order_by(Payment.created_at.desc())
+                )
+                pay = res.scalar_one_or_none()
+                if pay:
+                    order_ref = pay.order_ref
+                    log.info("🔄 Привязали пустой callback к заказу %s", order_ref)
+                else:
+                    log.error("🚫 Не нашли заказ для пустого orderReference")
+                    return
 
         if not (status in ("approved", "accept", "success") and order_ref.startswith("sub-")):
             log.info("Ignored WFP callback: status=%s order_ref=%s", status, order_ref)
