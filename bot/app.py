@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Update, Message
+from aiogram.types import Update
 from aiogram.exceptions import TelegramRetryAfter
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -138,7 +138,6 @@ async def wfp_return(request: Request):
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
 
-        # Проверка на устаревший токен (24 часа)
         if token_obj.created_at < datetime.utcnow() - timedelta(hours=24):
             return HTMLResponse("<h2>❌ Токен устарел</h2>", status_code=400)
 
@@ -148,8 +147,14 @@ async def wfp_return(request: Request):
         if not BOT_USERNAME:
             return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
 
-        # Если оплата ещё не подтверждена
-        if token_obj.status != "paid":
+        # Если оплата подтверждена
+        if token_obj.status == "paid":
+            token_obj.used = True
+            await s.commit()
+            # Активируем подписку через сервис
+            await activate_or_extend(bot, token_obj.user_id)
+            return RedirectResponse(f"https://t.me/{BOT_USERNAME}?start={token_obj.token}")
+        else:
             html_content = f"""
             <html>
             <head><title>Оплата не подтверждена</title></head>
@@ -161,15 +166,6 @@ async def wfp_return(request: Request):
             </html>
             """
             return HTMLResponse(html_content, status_code=400)
-
-        # Отмечаем токен как использованный и активируем подписку
-        token_obj.used = True
-        await s.commit()
-        await activate_or_extend(bot, token_obj.user_id)
-
-        # Отправляем пользователя в бот
-        invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
-        return RedirectResponse(invite_url)
 
 
 @app.post("/telegram/webhook")
