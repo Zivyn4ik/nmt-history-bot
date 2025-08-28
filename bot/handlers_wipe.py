@@ -1,17 +1,24 @@
+from __future__ import annotations
+
 from datetime import timedelta, datetime, timezone
 
-from aiogram import Router
+from aiogram import Router, Bot
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiogram.enums import ChatType
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import text
 
-from db import async_session_maker, User
-from services import remaining_days
+import logging
 
+from bot.config import settings
+from bot.db import async_session_maker, User
+from bot.services import remaining_days
+
+log = logging.getLogger(__name__)
 router = Router(name="admin")
 
-# Укажи свой Telegram ID здесь, чтобы ограничить доступ к админ-командам
-ADMIN_IDS = set(7534323874)  # пример: {123456789}
-
+ADMIN_IDS = set(7534323874) 
 def admin_only(func):
     async def wrapper(message: Message, *args, **kwargs):
         if message.from_user.id not in ADMIN_IDS:
@@ -71,3 +78,4 @@ async def cmd_ban(message: Message):
         u.status = "INACTIVE"
         await session.commit()
     await message.answer("Отключено")
+
