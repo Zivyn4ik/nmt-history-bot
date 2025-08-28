@@ -27,12 +27,14 @@ from bot.handlers import router as handlers_router
 from bot.handlers_wipe import router as wipe_router
 from bot.handlers_buy import router as buy_router
 from bot.services import enforce_expirations
+from bot.payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
 
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 BOT_USERNAME: str | None = None
 dp = Dispatcher()
+
 dp.include_router(start_router)
 dp.include_router(handlers_router)
 dp.include_router(wipe_router)
@@ -42,6 +44,7 @@ dp.include_router(buy_router)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global BOT_USERNAME
+
     await init_db()
 
     try:
@@ -57,7 +60,7 @@ async def lifespan(app: FastAPI):
                 await asyncio.sleep(e.retry_after)
                 await bot.set_webhook(webhook_url)
         else:
-            log.info("Webhook уже установлен")
+            log.info("Webhook уже установлен, ничего не делаем")
     except Exception as e:
         log.exception("Ошибка при установке webhook: %s", e)
 
@@ -72,7 +75,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), kwargs={"bot": bot})
     scheduler.add_job(enforce_expirations, CronTrigger(hour="*/6"), kwargs={"bot": bot})
     scheduler.start()
-    log.info("Scheduler запущен")
+    log.info("Scheduler запущен: подписки проверяются ежедневно и каждые 6 часов")
 
     yield
     await bot.session.close()
@@ -144,9 +147,32 @@ async def wfp_return(request: Request):
         if not BOT_USERNAME:
             return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
 
-        # Сразу редиректим в бота
+        # Отправляем пользователя в бот для отслеживания статуса
         invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
         return RedirectResponse(invite_url)
+
+
+# Проверка статуса оплаты через бота
+async def wait_for_payment(user_id: int, token: str, timeout: int = 30):
+    async with Session() as s:
+        start_time = datetime.utcnow()
+        message: Message = await bot.send_message(user_id, "⏳ Генерируем приглашение…")
+        while (datetime.utcnow() - start_time).total_seconds() < timeout:
+            res = await s.execute(
+                select(PaymentToken)
+                .where(PaymentToken.token == token)
+            )
+            token_obj = res.scalar_one_or_none()
+            if token_obj and token_obj.status == "paid":
+                token_obj.used = True
+                await s.commit()
+                await message.delete()
+                invite_url = f"https://t.me/{BOT_USERNAME}?start={token}"
+                await bot.send_message(user_id, f"✅ Оплата подтверждена! Вот ваша ссылка: {invite_url}")
+                return True
+            await asyncio.sleep(1)
+        await message.edit_text("❌ Оплата не подтвердилась за 30 секунд. Попробуйте позже.")
+        return False
 
 
 @app.post("/telegram/webhook")
@@ -163,9 +189,5 @@ async def wayforpay_callback(req: Request):
         data = await req.json()
     except Exception:
         data = {}
-    # Здесь ваша существующая функция process_callback обновляет статус PaymentToken и Payment
-    from bot.payments.wayforpay import process_callback
     await process_callback(bot, data)
     return {"ok": True}
-
-
