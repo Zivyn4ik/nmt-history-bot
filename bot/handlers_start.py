@@ -13,7 +13,7 @@ from bot.db import Session, PaymentToken
 
 router = Router()
 
-# --- Keyboards ---
+
 def _main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")],
@@ -21,12 +21,13 @@ def _main_menu_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💬 Підтримка", url="https://t.me/zivyn4ik")],
     ])
 
+
 def _buy_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оформити підписку", callback_data="buy")]
     ])
 
-# --- /start ---
+
 @router.message(CommandStart())
 async def start_handler(message: Message, bot: Bot):
     user = message.from_user
@@ -34,9 +35,9 @@ async def start_handler(message: Message, bot: Bot):
 
     token = getattr(message, "start_param", None)
     if token:
-        # запуск проверки статуса оплаты через polling
-        await message.answer("⏳ Генеруємо персональне запрошення, будь ласка, зачекайте…")
-        await check_payment_and_send_invite(bot, user.id, token)
+        # Сначала проверяем оплату и выдаём invite
+        await message.answer("⏳ Перевіряємо статус оплати…")
+        asyncio.create_task(check_payment_and_send_invite(bot, user.id, token))
 
     text = (
         "👋 <b>Вітаємо у навчальному боті HMT 2026 | Історія України!</b>\n\n"
@@ -50,12 +51,12 @@ async def start_handler(message: Message, bot: Bot):
 
 
 async def check_payment_and_send_invite(bot: Bot, user_id: int, token: str, timeout: int = 35):
-    """
-    Проверка оплаты каждые 1 сек до timeout секунд. После успешной оплаты
-    активирует подписку и отправляет join-link.
-    """
     start_time = datetime.utcnow()
-    message = await bot.send_message(user_id, "⏳ Перевіряємо статус оплати…")
+    try:
+        message = await bot.send_message(user_id, "⏳ Перевіряємо статус оплати…")
+    except Exception:
+        message = None
+
     while (datetime.utcnow() - start_time).total_seconds() < timeout:
         async with Session() as s:
             res = await s.execute(
@@ -65,19 +66,21 @@ async def check_payment_and_send_invite(bot: Bot, user_id: int, token: str, time
             if token_obj and token_obj.status == "paid":
                 token_obj.used = True
                 await s.commit()
-                await message.delete()
-                # активация подписки и отправка invite
+                if message:
+                    await message.delete()
                 await activate_or_extend(bot, user_id)
                 return
         await asyncio.sleep(1)
-    await message.edit_text("❌ Оплата не підтвердилась за 35 секунд. Спробуйте ще раз пізніше.")
-    
 
-# --- Callbacks ---
+    if message:
+        await message.edit_text("❌ Оплата не підтвердилась за 35 секунд. Спробуйте ще раз пізніше.")
+
+
 @router.callback_query(F.data == "buy")
 async def cb_buy(call, bot: Bot):
     from bot.handlers_buy import cmd_buy
     await cmd_buy(call.message, bot)
+
 
 @router.callback_query(F.data == "check_status")
 async def cb_check(call):
