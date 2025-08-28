@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 
 import logging
@@ -192,3 +191,4 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
