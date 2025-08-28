@@ -1,7 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import CommandStart
-from bot.db import async_session_maker, get_or_create_user
+from bot.db import Session
+from bot.services import ensure_user
 
 router = Router(name="start")
 
@@ -29,3 +30,4 @@ async def cmd_start(message: Message):
     async with async_session_maker() as session:
         await get_or_create_user(session, message.from_user.id)
     await message.answer(WELCOME, reply_markup=main_kb())
+
