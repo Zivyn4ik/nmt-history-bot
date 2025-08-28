@@ -31,26 +31,6 @@ async def start_handler(message: Message):
     user = message.from_user
     await ensure_user(user)
 
-    token = getattr(message, "start_param", None)
-    if token:
-        async with Session() as s:
-            res = await s.execute(
-                select(PaymentToken).where(
-                    PaymentToken.token == token,
-                    PaymentToken.status == "paid"
-                )
-            )
-            token_obj = res.scalar_one_or_none()
-            if token_obj and not token_obj.used:
-                token_obj.used = True
-                await s.commit()
-
-                invite_url = f"{settings.TG_JOIN_REQUEST_URL}?start={user.id}"
-                await message.answer(
-                    f"✅ Ваш персональний доступ готовий!\n\n"
-                    f"Посилання для вступу: {invite_url}"
-                )
-
     text = (
         "👋 <b>Вітаємо у навчальному боті HMT 2026 | Історія України!</b>\n\n"
         "📚 Тут ви отримаєте доступ до:\n"
@@ -60,7 +40,6 @@ async def start_handler(message: Message):
         "🧭 Скористайтесь кнопками нижче."
     )
     await message.answer(text, reply_markup=_main_menu_kb())
-
 
 # --- Callbacks ---
 @router.callback_query(F.data == "buy")
@@ -74,13 +53,12 @@ async def cb_check(call: CallbackQuery):
     await ensure_user(user)
 
     sub = await get_subscription_status(user.id)
-    invite = getattr(settings, "TG_JOIN_REQUEST_URL", "")
-
-    if getattr(sub, "status", None) == "active" and getattr(sub, "paid_until", None):
-        text = f"✅ Підписка активна до <b>{sub.paid_until.date()}</b>."
-        if invite:
-            text += f"\nЯкщо ви ще не в каналі — перейдіть за посиланням:\n{invite}"
-        await call.message.answer(text)
+    if sub.status == "active" and sub.paid_until:
+        remaining_days = (sub.paid_until.date() - date.today()).days
+        await call.message.answer(
+            f"✅ Підписка активна.\nЗалишилось днів: <b>{remaining_days}</b>.\n"
+            f"Якщо ще не в каналі — перейдіть за посиланням:\n{settings.TG_JOIN_REQUEST_URL}"
+        )
     else:
         await call.message.answer(
             "❌ Підписки немає або вона завершилась.\n\n"
