@@ -1,84 +1,140 @@
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, PlainTextResponse
-import asyncio
+from __future__ import annotations
 import logging
+import asyncio
+from urllib.parse import urlparse
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.responses import JSONResponse
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
+from aiogram.types import Update
+from aiogram.exceptions import TelegramRetryAfter
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from bot.config import settings
-from bot.db import init_db, async_session_maker
-from bot.services import check_subscriptions
+from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
+from bot.db import Session, Payment, PaymentToken, init_db
 from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
 from bot.handlers_wipe import router as wipe_router
 from bot.handlers_buy import router as buy_router
+from bot.services import enforce_expirations
+from bot.payments.wayforpay import create_invoice, validate_wfp_signature
 
 log = logging.getLogger("app")
-app = FastAPI()
 
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+BOT_USERNAME: str | None = None
 dp = Dispatcher()
 dp.include_router(start_router)
 dp.include_router(handlers_router)
 dp.include_router(wipe_router)
 dp.include_router(buy_router)
 
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global BOT_USERNAME
     await init_db()
-    log.info("База данных инициализирована")
-
-    # Запуск APScheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(check_subscriptions(bot, async_session_maker)),
-                      "interval", minutes=60)
+    try:
+        base = normalize_base_url(settings.BASE_URL)
+        webhook_url = f"{base}/telegram/webhook"
+        info = await bot.get_webhook_info()
+        if info.url != webhook_url:
+            try:
+                await bot.set_webhook(webhook_url)
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after)
+                await bot.set_webhook(webhook_url)
+    except Exception as e:
+        log.exception("Ошибка webhook: %s", e)
+    try:
+        me = await bot.get_me()
+        BOT_USERNAME = me.username
+    except Exception as e:
+        log.exception("Не удалось получить username бота: %s", e)
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(enforce_expirations, CronTrigger(hour=9, minute=0), kwargs={"bot": bot})
+    scheduler.add_job(enforce_expirations, CronTrigger(hour="*/6"), kwargs={"bot": bot})
     scheduler.start()
-    log.info("APScheduler запущен")
-
-    # Запуск Telegram long-polling
-    asyncio.create_task(dp.start_polling(bot))
-    log.info("Bot polling запущен")
-
-
-@app.on_event("shutdown")
-async def shutdown():
+    yield
     await bot.session.close()
-    log.info("Bot session закрыта")
 
+app = FastAPI(title="TG Subscription Bot", lifespan=lifespan)
 
-@app.get("/", response_class=PlainTextResponse)
+def normalize_base_url(u: str) -> str:
+    u = (u or "").strip()
+    if not urlparse(u).scheme:
+        u = "https://" + u
+    return u.rstrip("/")
+
+@app.get("/")
 async def root():
-    return "OK"
+    return {"ok": True}
 
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
-@app.get("/wfp/return", response_class=HTMLResponse)
-async def wfp_return():
-    bot_link = f"https://t.me/{(await bot.get_me()).username}"
-    html = f"""
-    <!doctype html>
-    <html lang="uk">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>Оплата отримана</title>
-        <style>
-          body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0f172a; color:#e2e8f0; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }}
-          .card {{ background:#111827; border:1px solid #1f2937; padding:32px; border-radius:16px; max-width:560px; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,0.4); }}
-          h1 {{ margin:0 0 8px; font-size:28px; }}
-          p {{ margin:8px 0 18px; line-height:1.5; color:#cbd5e1; }}
-          a.btn {{ display:inline-block; padding:12px 18px; border-radius:12px; background:#22c55e; color:#0b1220; text-decoration:none; font-weight:700; }}
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>✅ Оплата прийнята в обробку</h1>
-          <p>Поверніться у бота, щоб отримати доступ.</p>
-          <p><a class="btn" href="{bot_link}">Перейти в бота</a></p>
-        </div>
-      </body>
-    </html>
-    """
-    return HTMLResponse(content=html, status_code=200)
+@app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
+async def thanks_page(request: Request):
+    order_ref = (request.query_params.get("orderReference") or request.query_params.get("orderRef"))
+    if not order_ref:
+        try:
+            data = await request.json()
+            order_ref = data.get("orderReference") or data.get("orderRef")
+        except Exception:
+            data = {}
+    if not order_ref:
+        return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
+    async with Session() as s:
+        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
+        pay = res.scalar_one_or_none()
+        if not pay:
+            return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
+        res = await s.execute(
+            select(PaymentToken).where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending").order_by(PaymentToken.created_at.desc())
+        )
+        token_obj = res.scalar_one_or_none()
+        if not token_obj:
+            return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
+        token_obj.status = "paid"
+        await s.commit()
+        if not BOT_USERNAME:
+            return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
+        invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
+        return RedirectResponse(invite_url)
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.model_validate(data)
+    await dp.feed_update(bot, update)
+    return JSONResponse({"ok": True})
+
+@app.post("/wfp/return")
+async def wfp_return(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef") or data.get("orderReference") or data.get("orderRef")
+    if not order_ref:
+        return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
+    async with Session() as s:
+        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
+        pay = res.scalar_one_or_none()
+        if not pay:
+            return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
+        res = await s.execute(
+            select(PaymentToken).where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending").order_by(PaymentToken.created_at.desc())
+        )
+        token_obj = res.scalar_one_or_none()
+        if not token_obj:
+            return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
+        token_obj.status = "paid"
+        await s.commit()
+        if not BOT_USERNAME:
+            return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
+        invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
+        return RedirectResponse(invite_url)
