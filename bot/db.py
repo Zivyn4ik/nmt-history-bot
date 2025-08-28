@@ -1,25 +1,22 @@
-# db.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import Float, String, BigInteger, DateTime, Integer, ForeignKey
+from sqlalchemy import Float
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import String, BigInteger, DateTime, Integer, ForeignKey
 
 from bot.config import settings
 
-# --- Database engine & session ---
 engine = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
 Session = async_sessionmaker(engine, expire_on_commit=False)
 
 
-# --- Base class ---
 class Base(DeclarativeBase):
     pass
 
 
-# --- Models ---
 class User(Base):
     __tablename__ = "users"
 
@@ -63,11 +60,9 @@ class PaymentToken(Base):
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | paid | used
-    used: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
-# --- DB initialization ---
 async def init_db():
     """Инициализация БД и создание таблиц"""
     async with engine.begin() as conn:
