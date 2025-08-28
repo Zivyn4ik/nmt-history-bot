@@ -114,7 +114,6 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
             base = current
 
         new_until = base + timedelta(days=30)
-
         sub.status = "active"
         sub.paid_until = _tz_aware_utc(new_until)
         sub.grace_until = _tz_aware_utc(new_until + timedelta(days=3))
@@ -136,7 +135,6 @@ async def activate_or_extend(bot: Bot, user_id: int) -> None:
         )
     except Exception as e:
         log.warning("Cannot send subscription message to user %s: %s", user_id, e)
-
 
 async def enforce_expirations(bot: Bot) -> None:
     async with Session() as s:
@@ -163,3 +161,4 @@ async def enforce_expirations(bot: Bot) -> None:
                 await update_subscription(sub.user_id, status="expired")
             except Exception:
                 pass
+
