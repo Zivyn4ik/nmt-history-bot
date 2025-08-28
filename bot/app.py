@@ -113,42 +113,35 @@ async def thanks_page(request: Request):
     </html>
     """)
 
-
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
-    from bot.db import Payment, PaymentToken
+    from bot.db import PaymentToken
 
+    # Получаем token из query параметра или из тела запроса
+    token_param = request.query_params.get("token")
     try:
         data = await request.json()
+        token_param = token_param or data.get("token")
     except Exception:
         data = {}
 
-    token_param = request.query_params.get("token")
+    if not token_param:
+        return HTMLResponse("<h2>❌ Не передан token</h2>", status_code=400)
 
     async with Session() as s:
-        # Ищем последний pending PaymentToken
+        # Ищем токен вне зависимости от статуса
         res = await s.execute(
             select(PaymentToken)
-            .where(PaymentToken.status == "pending")
+            .where(PaymentToken.token == token_param)
             .order_by(PaymentToken.created_at.desc())
         )
-        token_obj = res.scalars().first()
+        token_obj = res.scalar_one_or_none()
+
         if not token_obj:
-            return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
+            return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
 
-        # Находим успешный Payment для этого пользователя
-        res = await s.execute(
-            select(Payment)
-            .where(Payment.user_id == token_obj.user_id, Payment.status.in_(["approved", "accept", "success"]))
-            .order_by(Payment.created_at.desc())
-        )
-        pay = res.scalar_one_or_none()
-        if not pay:
-            return HTMLResponse("<h2>❌ Платеж не найден или не оплачен</h2>", status_code=404)
-
-        # Отмечаем токен как оплаченный
-        token_obj.status = "paid"
-        await s.commit()
+        if token_obj.status != "paid":
+            return HTMLResponse("<h2>⏳ Оплата ещё не подтверждена</h2>", status_code=400)
 
         if not BOT_USERNAME:
             return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
@@ -173,3 +166,4 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
+
