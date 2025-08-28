@@ -19,7 +19,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
-from bot.db import Session, Payment, init_db
+from bot.db import Session, Payment, PaymentToken, init_db
 from bot.config import settings
 from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
@@ -102,18 +102,6 @@ async def healthz():
 
 @app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
 async def thanks_page(request: Request):
-    order_ref = request.query_params.get("orderReference") or request.query_params.get("orderRef")
-    if not order_ref:
-        try:
-            data = await request.json()
-            order_ref = data.get("orderReference") or data.get("orderRef")
-        except Exception:
-            data = {}
-            order_ref = None
-
-    if not order_ref:
-        return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
-
     return HTMLResponse("""
     <html>
     <head><title>Дякуємо за оплату!</title></head>
@@ -125,6 +113,7 @@ async def thanks_page(request: Request):
     </html>
     """)
 
+
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
     from bot.db import Payment, PaymentToken
@@ -134,44 +123,28 @@ async def wfp_return(request: Request):
     except Exception:
         data = {}
 
-    # Сначала ищем order_ref в query params или в теле
-    order_ref = (
-        request.query_params.get("orderReference")
-        or request.query_params.get("orderRef")
-        or data.get("orderReference")
-        or data.get("orderRef")
-    )
     token_param = request.query_params.get("token")
 
     async with Session() as s:
-        pay = None
-        token_obj = None
-
-        # Если order_ref есть, ищем по нему
-        if order_ref:
-            res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-            pay = res.scalar_one_or_none()
-        # Если order_ref нет, но есть token, ищем по токену
-        elif token_param:
-            res = await s.execute(select(PaymentToken).where(PaymentToken.token == token_param))
-            token_obj = res.scalar_one_or_none()
-            if token_obj:
-                res = await s.execute(select(Payment).where(Payment.user_id == token_obj.user_id).order_by(Payment.created_at.desc()))
-                pay = res.scalar_one_or_none()
-
-        if not pay:
-            return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
-
-        # Если token_obj ещё не найден, ищем его
+        # Ищем последний pending PaymentToken
+        res = await s.execute(
+            select(PaymentToken)
+            .where(PaymentToken.status == "pending")
+            .order_by(PaymentToken.created_at.desc())
+        )
+        token_obj = res.scalars().first()
         if not token_obj:
-            res = await s.execute(
-                select(PaymentToken)
-                .where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending")
-                .order_by(PaymentToken.created_at.desc())
-            )
-            token_obj = res.scalar_one_or_none()
-            if not token_obj:
-                return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
+            return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
+
+        # Находим успешный Payment для этого пользователя
+        res = await s.execute(
+            select(Payment)
+            .where(Payment.user_id == token_obj.user_id, Payment.status.in_(["approved", "accept", "success"]))
+            .order_by(Payment.created_at.desc())
+        )
+        pay = res.scalar_one_or_none()
+        if not pay:
+            return HTMLResponse("<h2>❌ Платеж не найден или не оплачен</h2>", status_code=404)
 
         # Отмечаем токен как оплаченный
         token_obj.status = "paid"
@@ -182,7 +155,6 @@ async def wfp_return(request: Request):
 
         invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
         return RedirectResponse(invite_url)
-
 
 
 @app.post("/telegram/webhook")
@@ -201,4 +173,3 @@ async def wayforpay_callback(req: Request):
         data = {}
     await process_callback(bot, data)
     return {"ok": True}
-
