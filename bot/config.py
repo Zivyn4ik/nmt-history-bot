@@ -1,4 +1,3 @@
-# config.py
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -16,6 +15,7 @@ class Settings(BaseSettings):
     LANG: str = Field(default="ua")
     DATABASE_URL: str = Field(default="sqlite+aiosqlite:///./bot.sqlite3")
     PAYMENT_URL: str = Field(default="https://secure.wayforpay.com/payment/sd11e605b4ab0")
+
     TG_JOIN_REQUEST_URL: str = Field(...)
 
     class Config:
@@ -23,3 +23,5 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
