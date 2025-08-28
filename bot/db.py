@@ -14,7 +14,6 @@ class Base(DeclarativeBase):
 
 class User(Base):
     __tablename__ = "users"
-
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -25,7 +24,6 @@ class User(Base):
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
-
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
     status: Mapped[str] = mapped_column(String(16), default="expired")
     paid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -40,7 +38,6 @@ class Subscription(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
     order_ref: Mapped[str] = mapped_column(String(128), unique=True)
@@ -51,7 +48,6 @@ class Payment(Base):
 
 class PaymentToken(Base):
     __tablename__ = "payment_tokens"
-
     token: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(16), default="pending")
