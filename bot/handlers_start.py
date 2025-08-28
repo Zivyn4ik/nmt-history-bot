@@ -1,17 +1,7 @@
-from __future__ import annotations
-
-from aiogram import Router, F, Bot
+from aiogram import Router, F
 from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.filters import CommandStart
-from sqlalchemy import select
-from datetime import datetime, timezone
-
-
-from bot.config import settings
-from bot.services import ensure_user, get_subscription_status, activate_or_extend
-from bot.db import Session, PaymentToken, async_session_maker, get_or_create_user
-
-import asyncio
+from bot.db import async_session_maker, get_or_create_user
 
 router = Router(name="start")
 
@@ -36,8 +26,6 @@ def main_kb() -> ReplyKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    # deep-link ?start=paid → сразу запускаем проверку в handlers_buy
     async with async_session_maker() as session:
         await get_or_create_user(session, message.from_user.id)
     await message.answer(WELCOME, reply_markup=main_kb())
-
