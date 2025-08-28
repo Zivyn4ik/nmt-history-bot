@@ -13,15 +13,14 @@ from aiogram.types import Update
 from aiogram.exceptions import TelegramRetryAfter
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
 
-from bot.db import Session, Payment, PaymentToken, init_db
+from bot.db import init_db, Session, Payment, PaymentToken
 from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
 from bot.handlers_wipe import router as wipe_router
 from bot.handlers_buy import router as buy_router
 from bot.services import enforce_expirations
-from bot.payments.wayforpay import create_invoice, validate_wfp_signature
+from bot.payments.wayforpay import create_invoice
 from bot.config import settings
 
 log = logging.getLogger("app")
@@ -70,19 +69,15 @@ async def lifespan(app: FastAPI):
     yield
     await bot.session.close()
 
-
 app = FastAPI(title="TG Subscription Bot", lifespan=lifespan)
-
 
 @app.get("/")
 async def root():
     return {"ok": True}
 
-
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
-
 
 @app.api_route("/thanks", methods=["GET", "POST", "HEAD"])
 async def thanks_page(request: Request):
@@ -98,21 +93,25 @@ async def thanks_page(request: Request):
         return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
 
     async with Session() as s:
-        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-        pay = res.scalar_one_or_none()
+        res = await s.execute(Payment.__table__.select().where(Payment.order_ref == order_ref))
+        pay = res.first()
         if not pay:
             return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
 
         res = await s.execute(
-            select(PaymentToken)
+            PaymentToken.__table__.select()
             .where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending")
             .order_by(PaymentToken.created_at.desc())
         )
-        token_obj = res.scalar_one_or_none()
+        token_obj = res.first()
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
 
-        token_obj.status = "paid"
+        await s.execute(
+            PaymentToken.__table__.update()
+            .where(PaymentToken.id == token_obj.id)
+            .values(status="paid")
+        )
         await s.commit()
 
         if not BOT_USERNAME:
@@ -121,14 +120,12 @@ async def thanks_page(request: Request):
         invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
         return RedirectResponse(invite_url)
 
-
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
     update = Update.model_validate(data)
     await dp.feed_update(bot, update)
     return JSONResponse({"ok": True})
-
 
 @app.post("/wfp/return")
 async def wfp_return(request: Request):
@@ -147,21 +144,25 @@ async def wfp_return(request: Request):
         return HTMLResponse("<h2>❌ Не передан orderReference</h2>", status_code=400)
 
     async with Session() as s:
-        res = await s.execute(select(Payment).where(Payment.order_ref == order_ref))
-        pay = res.scalar_one_or_none()
+        res = await s.execute(Payment.__table__.select().where(Payment.order_ref == order_ref))
+        pay = res.first()
         if not pay:
             return HTMLResponse("<h2>❌ Платеж не найден</h2>", status_code=404)
 
         res = await s.execute(
-            select(PaymentToken)
+            PaymentToken.__table__.select()
             .where(PaymentToken.user_id == pay.user_id, PaymentToken.status == "pending")
             .order_by(PaymentToken.created_at.desc())
         )
-        token_obj = res.scalar_one_or_none()
+        token_obj = res.first()
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен уже использован или не найден</h2>", status_code=404)
 
-        token_obj.status = "paid"
+        await s.execute(
+            PaymentToken.__table__.update()
+            .where(PaymentToken.id == token_obj.id)
+            .values(status="paid")
+        )
         await s.commit()
 
         if not BOT_USERNAME:
