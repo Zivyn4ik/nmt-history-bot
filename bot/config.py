@@ -1,5 +1,7 @@
 import os
 from pydantic import BaseModel
+from pydantic_settings import BaseSettings 
+from pydantic import Field
 
 class Settings(BaseModel):
     BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
@@ -27,5 +29,6 @@ class Settings(BaseModel):
         return "https://api.wayforpay.com/api"
 
 settings = Settings()
+
 
 
