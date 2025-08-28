@@ -19,13 +19,12 @@ class SubInfo:
     paid_until: datetime | None
 
 async def ensure_user(tg_user) -> None:
-    """Создаёт пользователя, если его ещё нет."""
     async with Session() as s:
         obj = await s.get(User, tg_user.id)
         if obj:
             if tg_user.username and obj.username != tg_user.username:
                 obj.username = tg_user.username
-                await s.commit()
+            await s.commit()
         else:
             s.add(User(id=tg_user.id, username=tg_user.username))
             s.add(Subscription(user_id=tg_user.id, status="expired"))
@@ -129,20 +128,20 @@ async def enforce_expirations(bot: Bot) -> None:
     async with Session() as s:
         res = await s.execute(select(Subscription))
         subs = res.scalars().all()
-
-        # Проверки напоминаний, grace и expired
         for sub in subs:
             paid_until = _tz_aware_utc(sub.paid_until)
             grace_until = _tz_aware_utc(sub.grace_until)
 
-            if sub.status == "active" and paid_until and (paid_until - timedelta(days=3)).date() == today and sub.last_reminded_on != today:
+            # Напоминание за 3 дня
+            if (sub.status == "active" and paid_until and (paid_until - timedelta(days=3)).date() == today and sub.last_reminded_on != today):
                 try:
                     await bot.send_message(sub.user_id, "⚠️ Нагадування: ваша підписка закінчується через 3 дні. Продліть її через /buy.")
                 except Exception:
                     pass
                 await update_subscription(sub.user_id, last_reminded_on=today, updated_at=moment)
 
-            if sub.status == "active" and paid_until and paid_until.date() == today and sub.last_reminded_on != today:
+            # День окончания
+            if (sub.status == "active" and paid_until and paid_until.date() == today and sub.last_reminded_on != today):
                 try:
                     kb = {"inline_keyboard": [[{"text": "🔄 Продлить подписку", "callback_data": "buy"}]]}
                     await bot.send_message(sub.user_id, "⏳ Ваша підписка закінчилась сьогодні. Ви можете продовжити її ще на 30 днів.", reply_markup=kb)
@@ -150,7 +149,8 @@ async def enforce_expirations(bot: Bot) -> None:
                     pass
                 await update_subscription(sub.user_id, last_reminded_on=today, status="grace", updated_at=moment)
 
-            if sub.status in {"active", "grace"} and grace_until and moment > grace_until:
+            # Переводим в expired после grace
+            if (sub.status in {"active", "grace"} and grace_until and moment > grace_until):
                 try:
                     await bot.ban_chat_member(settings.CHANNEL_ID, sub.user_id)
                     await bot.unban_chat_member(settings.CHANNEL_ID, sub.user_id)
@@ -158,7 +158,7 @@ async def enforce_expirations(bot: Bot) -> None:
                     pass
                 await update_subscription(sub.user_id, status="expired", updated_at=moment)
 
-        # Чистка канала от «левых» пользователей
+        # Чистка канала от «левых»
         try:
             members = await bot.get_chat_administrators(settings.CHANNEL_ID)
             admins = {m.user.id for m in members}
