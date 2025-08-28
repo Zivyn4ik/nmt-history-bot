@@ -26,7 +26,7 @@ from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
 from bot.handlers_wipe import router as wipe_router
 from bot.handlers_buy import router as buy_router
-from bot.services import enforce_expirations, activate_or_extend
+from bot.services import enforce_expirations
 from bot.payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
@@ -117,6 +117,11 @@ async def thanks_page(request: Request):
 
 @app.api_route("/wfp/return", methods=["GET", "POST", "HEAD"])
 async def wfp_return(request: Request):
+    """
+    Новый flow:
+    После оплаты перенаправляет в бота с start_param=токен.
+    Проверка статуса оплаты делается внутри бота через polling.
+    """
     token_param = request.query_params.get("token")
     try:
         data = await request.json()
@@ -138,34 +143,17 @@ async def wfp_return(request: Request):
         if not token_obj:
             return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
 
+        # Проверка на устаревший токен (24 часа)
         if token_obj.created_at < datetime.utcnow() - timedelta(hours=24):
             return HTMLResponse("<h2>❌ Токен устарел</h2>", status_code=400)
 
-        if token_obj.used:
-            return HTMLResponse("<h2>❌ Токен уже использован</h2>", status_code=400)
+        # Отмечаем токен как использованный для редиректа
+        token_obj.used = True
+        await s.commit()
 
-        if not BOT_USERNAME:
-            return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
-
-        # Если оплата подтверждена
-        if token_obj.status == "paid":
-            token_obj.used = True
-            await s.commit()
-            # Активируем подписку через сервис
-            await activate_or_extend(bot, token_obj.user_id)
-            return RedirectResponse(f"https://t.me/{BOT_USERNAME}?start={token_obj.token}")
-        else:
-            html_content = f"""
-            <html>
-            <head><title>Оплата не подтверждена</title></head>
-            <body>
-                <h2>⏳ Оплата ещё не подтверждена</h2>
-                <p>Ваш токен: {token_obj.token}</p>
-                <p>Попробуйте обновить страницу через несколько секунд.</p>
-            </body>
-            </html>
-            """
-            return HTMLResponse(html_content, status_code=400)
+        # Редирект в бот с start_param
+        invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
+        return RedirectResponse(invite_url)
 
 
 @app.post("/telegram/webhook")
