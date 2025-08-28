@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from aiogram import Router, Bot
 from aiogram.types import Message
-from aiogram.filters import Text
+from aiogram.filters import F
 from bot.services import ensure_user, get_subscription_status, has_active_access, UTC
 from bot.payments.wayforpay import create_invoice
 from bot.db import Session, Payment
@@ -44,3 +44,4 @@ async def check_subscription(message: Message):
         await message.answer(f"✅ Ваша подписка активна до {paid_until}")
     else:
         await message.answer("❌ У вас нет активной подписки.")
+
