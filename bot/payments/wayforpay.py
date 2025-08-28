@@ -56,10 +56,9 @@ def validate_wfp_signature(data: Dict[str, Any]) -> bool:
         amount = str(data.get("amount") or "0")
         currency = str(data.get("currency") or "")
 
-        order_date_raw = data.get("orderDate")  # не обязательно теперь
+        order_date_raw = data.get("orderDate")
         order_date = int(order_date_raw) if order_date_raw else int(time.time())
 
-        # гарантируем, что это всегда списки
         def ensure_list(val):
             if isinstance(val, list):
                 return val
@@ -180,15 +179,14 @@ async def process_callback(bot, data: Dict[str, Any]) -> None:
             return
 
         status = (data.get("transactionStatus") or data.get("status") or "").lower()
-        order_ref = str(data.get("orderReference") or "")
-        log.info("✅ WFP callback received: %s %s", status, order_ref)
+        log.info("✅ WFP callback received: status=%s", status)
 
         if status not in ("approved", "accept", "success"):
-            log.info("Ignored WFP callback: status=%s order_ref=%s", status, order_ref)
+            log.info("Ignored WFP callback: status=%s", status)
             return
 
         async with Session() as s:
-            # Находим последний pending токен для пользователя
+            # Находим последний pending токен
             res = await s.execute(
                 select(PaymentToken)
                 .where(PaymentToken.status == "pending")
