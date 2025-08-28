@@ -1,15 +1,22 @@
+from __future__ import annotations
+
+
+import logging 
+import uuid
 import asyncio
 from datetime import datetime
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
 
-from db import async_session_maker, get_or_create_user, User
-from payments.wayforpay import create_invoice, check_status
-from services import activate_subscription, remaining_days
-from config import settings
+from bot.db import Session, PaymentToken, Payment
+from bot.db import async_session_maker, get_or_create_user, User
+from bot.payments.wayforpay import create_invoice, check_status
+from services import activate_subscription, remaining_days, create_invoice
+from bot.config import settings
 
 router = Router(name="buy")
+log = logging.getLogger("handlers.buy")
 
 def pay_kb(url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -85,3 +92,4 @@ async def handle_help(message: Message):
         "• Натисніть «Проверить подписку», щоб отримати доступ.\n"
         "• Підтримка: напишіть у чат бота."
     )
+
