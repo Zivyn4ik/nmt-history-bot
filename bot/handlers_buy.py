@@ -9,7 +9,6 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from bot.config import settings
 from bot.db import Session, PaymentToken, Payment
 from bot.payments.wayforpay import create_invoice
-from bot.services import activate_or_extend
 
 router = Router()
 log = logging.getLogger("handlers.buy")
@@ -17,9 +16,9 @@ log = logging.getLogger("handlers.buy")
 
 @router.message(Command("buy"))
 async def cmd_buy(message: Message, bot: Bot):
-    """Создаёт токен и инвойс, после оплаты активирует подписку и отправляет ссылку."""
     user_id = message.from_user.id
 
+    # 1️⃣ Создаём новый pending-токен
     token = uuid.uuid4().hex
     try:
         async with Session() as session:
@@ -31,13 +30,14 @@ async def cmd_buy(message: Message, bot: Bot):
         await message.answer("Не вдалося підготувати оплату. Спробуйте ще раз.")
         return
 
+    # 2️⃣ Создаём инвойс WayForPay и создаём запись Payment
     try:
         url, order_ref = await create_invoice(
             user_id=user_id,
             amount=settings.PRICE,
             currency=settings.CURRENCY,
             product_name=getattr(settings, "PRODUCT_NAME", "Channel subscription (1 month)"),
-            start_token=token,
+            start_token=token,  # токен для редиректа в бота
         )
 
         async with Session() as session:
