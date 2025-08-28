@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Update
+from aiogram.types import Update, Message
 from aiogram.exceptions import TelegramRetryAfter
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -26,7 +26,8 @@ from bot.handlers_start import router as start_router
 from bot.handlers import router as handlers_router
 from bot.handlers_wipe import router as wipe_router
 from bot.handlers_buy import router as buy_router
-from bot.services import enforce_expirations
+from bot.services import enforce_expirations, activate_or_extend
+
 from bot.payments.wayforpay import process_callback
 
 log = logging.getLogger("app")
@@ -127,12 +128,49 @@ async def wfp_return(request: Request):
     if not token_param:
         return HTMLResponse("<h2>❌ Не передан token</h2>", status_code=400)
 
-    # Редирект в бота с token для проверки платежа
-    if not BOT_USERNAME:
-        return HTMLResponse("<h2>⚠️ BOT_USERNAME не установлен</h2>", status_code=500)
+    async with Session() as s:
+        res = await s.execute(
+            select(PaymentToken)
+            .where(PaymentToken.token == token_param)
+            .order_by(PaymentToken.created_at.desc())
+        )
+        token_obj = res.scalar_one_or_none()
 
-    invite_url = f"https://t.me/{BOT_USERNAME}?start={token_param}"
+        if not token_obj:
+            return HTMLResponse("<h2>❌ Токен не найден</h2>", status_code=404)
+
+    # Редиректим в бота с запуском проверки оплаты
+    invite_url = f"https://t.me/{BOT_USERNAME}?start={token_obj.token}"
+    asyncio.create_task(wait_for_payment(token_obj.user_id, token_obj.token))
     return RedirectResponse(invite_url)
+
+
+async def wait_for_payment(user_id: int, token: str, timeout: int = 35):
+    """Проверка оплаты каждые 1 секунду и выдача приглашения на канал после успешной оплаты."""
+    async with Session() as s:
+        try:
+            msg: Message = await bot.send_message(user_id, "⏳ Генерируем приглашение…")
+        except Exception:
+            msg = None
+
+        start_time = datetime.utcnow()
+        while (datetime.utcnow() - start_time).total_seconds() < timeout:
+            res = await s.execute(
+                select(PaymentToken)
+                .where(PaymentToken.token == token)
+            )
+            token_obj = res.scalar_one_or_none()
+            if token_obj and token_obj.status == "paid":
+                token_obj.used = True
+                await s.commit()
+                await activate_or_extend(bot, user_id)
+                if msg:
+                    await msg.delete()
+                return
+            await asyncio.sleep(1)
+
+        if msg:
+            await msg.edit_text("❌ Оплата не подтвердилась за 35 секунд. Попробуйте позже.")
 
 
 @app.post("/telegram/webhook")
